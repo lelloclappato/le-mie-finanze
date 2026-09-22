@@ -70,8 +70,8 @@
       showAddPortfolio: false, newPortfolioName: '',
       editingHoldingId: null, editHoldingName: '', editHoldingValue: '', editHoldingChange: '',
 
-      showAddTx: false, newTxCategory: '', newTxAmount: '', newTxType: 'uscita', newTxDate: '', newTxNote: '',
-      showImport: false, importBusy: false, importError: '', importRows: [],
+      showAddTx: false, newTxCategory: '', newTxAmount: '', newTxType: 'uscita', newTxDate: '', newTxNote: '', newTxAccountId: '',
+      showImport: false, importBusy: false, importError: '', importSuccess: '', importRows: [],
       showCreateCat: false, managingCategories: false,
       newCatName: '', newCatColor: CATEGORY_PALETTE[0], newCatIcon: '',
       editingCatId: null, editingCatType: null
@@ -256,15 +256,16 @@
   }
 
   function readCSVFile(file) {
-    return file.text().then(function (text) { return parseCSV(text); });
+    return file.text().then(function (text) { return [{ name: null, rows: parseCSV(text) }]; });
   }
   function readXLSXFile(file) {
     return loadScript('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js').then(function () {
       return file.arrayBuffer();
     }).then(function (buf) {
       var wb = window.XLSX.read(buf, { type: 'array', cellDates: true });
-      var sheet = wb.Sheets[wb.SheetNames[0]];
-      return window.XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: '' });
+      return wb.SheetNames.map(function (sn) {
+        return { name: sn, rows: window.XLSX.utils.sheet_to_json(wb.Sheets[sn], { header: 1, raw: true, defval: '' }) };
+      });
     });
   }
   function readPDFFile(file) {
@@ -295,7 +296,7 @@
     }).then(function (pagesLines) {
       var allLines = [];
       pagesLines.forEach(function (pl) { allLines = allLines.concat(pl); });
-      return parsePDFLines(allLines);
+      return [{ name: null, rows: parsePDFLines(allLines) }];
     });
   }
 
@@ -350,9 +351,162 @@
       var catList = type === 'entrata' ? categories.incomeCategories : categories.expenseCategories;
       var explicitValidForType = explicitCatName && catList.some(function (c) { return c.name === explicitCatName; });
       var cat = explicitValidForType ? explicitCatName : guessCategory(desc, catList);
-      items.push({ date: dateVal, note: desc, amount: String(absAmount.toFixed(2)).replace('.', ','), type: type, category: cat, include: true });
+      items.push({ kind: 'tx', date: dateVal, note: desc, amount: String(absAmount.toFixed(2)).replace('.', ','), type: type, category: cat, accountName: '', accountChoice: '', include: true });
     });
     return items;
+  }
+
+  // ---------- header-aware import (Excel/CSV exports with explicit columns) ----------
+  function excelSerialToISO(n) {
+    var utcDays = Math.floor(n - 25569);
+    return isoFromDate(new Date(utcDays * 86400000));
+  }
+  function cellToISODate(cell) {
+    if (cell instanceof Date) return isoFromDate(cell);
+    if (typeof cell === 'number') return excelSerialToISO(cell);
+    var str = String(cell == null ? '' : cell).trim();
+    if (/^\d+(\.\d+)?$/.test(str)) return excelSerialToISO(parseFloat(str));
+    return parseFlexibleDate(str);
+  }
+
+  function detectHeaderMap(headerRow) {
+    var map = {};
+    (headerRow || []).forEach(function (cell, i) {
+      var h = String(cell == null ? '' : cell).toLowerCase().trim();
+      if (map.date === undefined && /^date|^data/.test(h)) { map.date = i; return; }
+      if (map.category === undefined && /^categor/.test(h)) { map.category = i; return; }
+      if (map.account === undefined && /^account|^conto/.test(h)) { map.account = i; return; }
+      if (map.outgoing === undefined && /^outgoing/.test(h)) { map.outgoing = i; return; }
+      if (map.incoming === undefined && /^incoming/.test(h)) { map.incoming = i; return; }
+      if (map.type === undefined && /^type$|^tipo$/.test(h)) { map.type = i; return; }
+      if (map.note === undefined && /comment|nota|note|descrizione/.test(h)) { map.note = i; return; }
+      if (/amount in default currency/.test(h)) { map.amount = i; return; }
+      if (map.amount === undefined && /amount|importo/.test(h)) { map.amount = i; return; }
+    });
+    return map;
+  }
+
+  function classifySheet(sheetName, rows) {
+    if (!rows || !rows.length) return null;
+    var headerIdx = -1, map = null, isTransfer = false;
+    for (var i = 0; i < Math.min(rows.length, 5); i++) {
+      var candidate = detectHeaderMap(rows[i]);
+      var candTransfer = candidate.outgoing !== undefined && candidate.incoming !== undefined && candidate.date !== undefined;
+      var candTx = !candTransfer && candidate.date !== undefined && candidate.amount !== undefined;
+      if (candTransfer || candTx) { headerIdx = i; map = candidate; isTransfer = candTransfer; break; }
+    }
+    if (headerIdx === -1) return { kind: 'generic', rows: rows };
+    var lowerName = (sheetName || '').toLowerCase();
+    var forcedType = null;
+    if (/expense|spes|uscit/.test(lowerName)) forcedType = 'uscita';
+    else if (/income|entrat/.test(lowerName)) forcedType = 'entrata';
+    return { kind: isTransfer ? 'transfer' : 'tx', map: map, rows: rows.slice(headerIdx + 1), forcedType: forcedType };
+  }
+
+  function cellStr(row, idx) {
+    if (idx === undefined) return '';
+    var v = row[idx];
+    return String(v == null ? '' : v).trim();
+  }
+
+  function buildTxItemsFromMappedSheet(sheet, categories) {
+    var items = [];
+    sheet.rows.forEach(function (row) {
+      var dateVal = cellToISODate(row[sheet.map.date]);
+      if (!dateVal) return;
+      var amountVal = parseAmountStr(cellStr(row, sheet.map.amount));
+      if (isNaN(amountVal) || amountVal === 0) return;
+      var typeVal = sheet.forcedType;
+      if (!typeVal && sheet.map.type !== undefined) {
+        var tCell = cellStr(row, sheet.map.type).toLowerCase();
+        if (/uscita|spesa|debit|dare|expense/.test(tCell)) typeVal = 'uscita';
+        else if (/entrata|income|credit|avere/.test(tCell)) typeVal = 'entrata';
+      }
+      if (!typeVal) typeVal = amountVal < 0 ? 'uscita' : 'entrata';
+      var absAmount = Math.abs(amountVal);
+      var rawCategory = cellStr(row, sheet.map.category);
+      var rawNote = cellStr(row, sheet.map.note);
+      var rawAccount = cellStr(row, sheet.map.account);
+      var catList = typeVal === 'entrata' ? categories.incomeCategories : categories.expenseCategories;
+      var cat = rawCategory || guessCategory(rawNote, catList);
+      items.push({ kind: 'tx', date: dateVal, note: rawNote, amount: String(absAmount.toFixed(2)).replace('.', ','), type: typeVal, category: cat, accountName: rawAccount, accountChoice: '', include: true });
+    });
+    return items;
+  }
+
+  function buildTransferItemsFromMappedSheet(sheet) {
+    var items = [];
+    sheet.rows.forEach(function (row) {
+      var dateVal = cellToISODate(row[sheet.map.date]);
+      if (!dateVal) return;
+      var amountVal = parseAmountStr(cellStr(row, sheet.map.amount));
+      if (isNaN(amountVal) || amountVal === 0) return;
+      var fromName = cellStr(row, sheet.map.outgoing);
+      var toName = cellStr(row, sheet.map.incoming);
+      if (!fromName || !toName) return;
+      var note = cellStr(row, sheet.map.note);
+      items.push({ kind: 'transfer', date: dateVal, note: note, amount: String(Math.abs(amountVal).toFixed(2)).replace('.', ','), fromAccountName: fromName, toAccountName: toName, fromAccountChoice: '', toAccountChoice: '', include: true });
+    });
+    return items;
+  }
+
+  function canonicalAccountName(raw) {
+    var s = String(raw || '').trim();
+    if (!s) return '';
+    if (s === s.toUpperCase() && s.length <= 5) return s;
+    return s.replace(/\S+/g, function (w) { return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase(); });
+  }
+  function findAccountByName(name, accounts) {
+    var lower = name.toLowerCase();
+    for (var i = 0; i < accounts.length; i++) { if (accounts[i].name.toLowerCase() === lower) return accounts[i]; }
+    return null;
+  }
+  function resolveAccountChoiceDefault(name, accounts) {
+    if (!name) return '';
+    var canon = canonicalAccountName(name);
+    var existing = findAccountByName(canon, accounts);
+    return existing ? String(existing.id) : ('new:' + canon);
+  }
+
+  function buildImportItemsFromSheets(sheetsResult, categories, accountsSnapshot) {
+    var items = [];
+    sheetsResult.forEach(function (sheet) {
+      if (!sheet.rows || !sheet.rows.length) return;
+      var classified = classifySheet(sheet.name, sheet.rows);
+      if (!classified) return;
+      if (classified.kind === 'tx') items = items.concat(buildTxItemsFromMappedSheet(classified, categories));
+      else if (classified.kind === 'transfer') items = items.concat(buildTransferItemsFromMappedSheet(classified));
+      else items = items.concat(rowsToImportItems(classified.rows, categories));
+    });
+    items.forEach(function (item) {
+      if (item.kind === 'tx' && item.accountName) item.accountChoice = resolveAccountChoiceDefault(item.accountName, accountsSnapshot);
+      else if (item.kind === 'transfer') {
+        item.fromAccountChoice = resolveAccountChoiceDefault(item.fromAccountName, accountsSnapshot);
+        item.toAccountChoice = resolveAccountChoiceDefault(item.toAccountName, accountsSnapshot);
+      }
+    });
+    return items;
+  }
+
+  function collectNewAccountOptions(importRows) {
+    var seen = {}, list = [];
+    importRows.forEach(function (r) {
+      [r.accountChoice, r.fromAccountChoice, r.toAccountChoice].forEach(function (c) {
+        if (c && c.indexOf('new:') === 0 && !seen[c]) { seen[c] = true; list.push(c); }
+      });
+    });
+    return list;
+  }
+  function accountSelectOptions(existingAccounts, newAccountChoices, selected) {
+    var opts = '<option value=""' + (selected === '' ? ' selected' : '') + '>Nessun conto</option>';
+    existingAccounts.forEach(function (a) {
+      var v = String(a.id);
+      opts += '<option value="' + v + '"' + (selected === v ? ' selected' : '') + '>' + esc(a.name) + '</option>';
+    });
+    newAccountChoices.forEach(function (c) {
+      opts += '<option value="' + esc(c) + '"' + (selected === c ? ' selected' : '') + '>+ Nuovo conto: ' + esc(c.slice(4)) + '</option>';
+    });
+    return opts;
   }
 
   // ---------- state update ----------
@@ -362,7 +516,11 @@
     renderPreserveFocus();
   }
   function toggle(field) {
-    var p = {}; p[field] = !state[field]; update(p);
+    var p = {}; p[field] = !state[field];
+    if (field === 'showAddTx' && p[field] && !state.newTxAccountId && state.accounts.length) {
+      p.newTxAccountId = String(state.accounts[0].id);
+    }
+    update(p);
   }
 
   // ---------- mutations ----------
@@ -481,12 +639,27 @@
     pickTxCategory: function (name) { update({ newTxCategory: name }); },
     addTx: function () {
       if (!state.newTxCategory || state.newTxAmount === '' || !state.newTxDate) return;
+      var amt = numVal(state.newTxAmount) || 0;
+      var accountId = state.newTxAccountId ? Number(state.newTxAccountId) : null;
+      var accounts = accountId ? state.accounts.map(function (a) {
+        return a.id === accountId ? Object.assign({}, a, { balance: a.balance + (state.newTxType === 'entrata' ? amt : -amt) }) : a;
+      }) : state.accounts;
       update({
-        transactions: state.transactions.concat([{ id: uid(), category: state.newTxCategory, amount: numVal(state.newTxAmount) || 0, type: state.newTxType, date: state.newTxDate, note: state.newTxNote }]),
-        newTxCategory: '', newTxAmount: '', newTxType: 'uscita', newTxDate: '', newTxNote: '', showAddTx: false
+        transactions: state.transactions.concat([{ id: uid(), category: state.newTxCategory, amount: amt, type: state.newTxType, date: state.newTxDate, note: state.newTxNote, accountId: accountId }]),
+        accounts: accounts,
+        newTxCategory: '', newTxAmount: '', newTxType: 'uscita', newTxDate: '', newTxNote: '', newTxAccountId: '', showAddTx: false
       });
     },
-    removeTx: function (id) { update({ transactions: state.transactions.filter(function (t) { return t.id !== id; }) }); },
+    removeTx: function (id) {
+      var tx = state.transactions.find(function (t) { return t.id === id; });
+      var accounts = state.accounts;
+      if (tx && tx.accountId) {
+        accounts = state.accounts.map(function (a) {
+          return a.id === tx.accountId ? Object.assign({}, a, { balance: a.balance - (tx.type === 'entrata' ? tx.amount : -tx.amount) }) : a;
+        });
+      }
+      update({ transactions: state.transactions.filter(function (t) { return t.id !== id; }), accounts: accounts });
+    },
 
     toggleCreateCat: function () {
       update({ showCreateCat: !state.showCreateCat, editingCatId: null, editingCatType: null, newCatName: '', newCatColor: CATEGORY_PALETTE[0], newCatIcon: '' });
@@ -540,17 +713,18 @@
 
     handleImportFile: function (file) {
       if (!file) return;
-      update({ importBusy: true, importError: '', importRows: [] });
+      update({ importBusy: true, importError: '', importSuccess: '', importRows: [] });
       var name = file.name.toLowerCase();
       var categories = { expenseCategories: state.expenseCategories, incomeCategories: state.incomeCategories };
+      var accountsSnapshot = state.accounts;
       var reader;
       if (/\.csv$/.test(name)) reader = readCSVFile(file);
       else if (/\.xlsx$|\.xls$/.test(name)) reader = readXLSXFile(file);
       else if (/\.pdf$/.test(name)) reader = readPDFFile(file);
       else { update({ importBusy: false, importError: 'Formato non supportato. Usa un file CSV, Excel (.xlsx) o PDF.' }); return; }
 
-      reader.then(function (rows) {
-        var items = rowsToImportItems(rows, categories);
+      reader.then(function (sheetsResult) {
+        var items = buildImportItemsFromSheets(sheetsResult, categories, accountsSnapshot);
         if (!items.length) {
           update({ importBusy: false, importError: 'Non ho trovato movimenti riconoscibili in questo file. Controlla il formato oppure inseriscili a mano.' });
           return;
@@ -585,10 +759,73 @@
       update({ importRows: state.importRows.filter(function (_, i) { return i !== idx; }) });
     },
     confirmImport: function () {
-      var newTx = state.importRows.filter(function (r) { return r.include; }).map(function (r) {
-        return { id: uid(), category: r.category, amount: numVal(r.amount) || 0, type: r.type, date: r.date, note: r.note };
+      var included = state.importRows.filter(function (r) { return r.include; });
+      if (!included.length) { update({ importRows: [] }); return; }
+
+      var accounts = state.accounts.slice();
+      var newAccountIdByChoice = {};
+      function resolveAccount(choice) {
+        if (!choice) return null;
+        if (choice.indexOf('new:') === 0) {
+          if (newAccountIdByChoice[choice]) return newAccountIdByChoice[choice];
+          var acc = { id: uid(), name: choice.slice(4), bank: '', balance: 0, excludeFromTotal: false };
+          accounts.push(acc);
+          newAccountIdByChoice[choice] = acc.id;
+          return acc.id;
+        }
+        var found = accounts.find(function (a) { return String(a.id) === choice; });
+        return found ? found.id : null;
+      }
+
+      var expenseCategories = state.expenseCategories.slice();
+      var incomeCategories = state.incomeCategories.slice();
+      function resolveCategory(name, type) {
+        var list = type === 'entrata' ? incomeCategories : expenseCategories;
+        var found = list.find(function (c) { return c.name.toLowerCase() === name.toLowerCase(); });
+        if (found) return found.name;
+        var cat = { id: uid(), name: name, color: CATEGORY_PALETTE[list.length % CATEGORY_PALETTE.length], icon: '' };
+        list.push(cat);
+        return cat.name;
+      }
+
+      var newTx = [];
+      var balanceDelta = {};
+      var skippedTransfers = 0;
+      var appliedTransfers = 0;
+
+      included.forEach(function (r) {
+        if (r.kind === 'transfer') {
+          var fromId = resolveAccount(r.fromAccountChoice);
+          var toId = resolveAccount(r.toAccountChoice);
+          var tamt = numVal(r.amount) || 0;
+          if (!fromId || !toId || fromId === toId || tamt <= 0) { skippedTransfers++; return; }
+          balanceDelta[fromId] = (balanceDelta[fromId] || 0) - tamt;
+          balanceDelta[toId] = (balanceDelta[toId] || 0) + tamt;
+          appliedTransfers++;
+          return;
+        }
+        var accountId = resolveAccount(r.accountChoice);
+        var amt = numVal(r.amount) || 0;
+        var categoryName = resolveCategory(r.category || 'Altro', r.type);
+        newTx.push({ id: uid(), category: categoryName, amount: amt, type: r.type, date: r.date, note: r.note, accountId: accountId });
+        if (accountId) balanceDelta[accountId] = (balanceDelta[accountId] || 0) + (r.type === 'entrata' ? amt : -amt);
       });
-      update({ transactions: state.transactions.concat(newTx), showImport: false, importRows: [], importError: '' });
+
+      accounts = accounts.map(function (a) {
+        return balanceDelta[a.id] ? Object.assign({}, a, { balance: a.balance + balanceDelta[a.id] }) : a;
+      });
+
+      var summary = newTx.length + ' movimenti importati';
+      if (appliedTransfers > 0) summary += ', ' + appliedTransfers + ' giroconti applicati';
+      if (skippedTransfers > 0) summary += ' (' + skippedTransfers + ' giroconti saltati per conto mancante)';
+
+      update({
+        accounts: accounts,
+        expenseCategories: expenseCategories,
+        incomeCategories: incomeCategories,
+        transactions: state.transactions.concat(newTx),
+        showImport: true, importRows: [], importError: '', importSuccess: summary
+      });
     }
   };
   window.App = App;
@@ -761,8 +998,10 @@
       var meta = catMeta(s.expenseCategories.concat(s.incomeCategories), t.category);
       var amountFmt = (t.type === 'entrata' ? '+' : '-') + fmt(t.amount);
       var color = t.type === 'entrata' ? ACCENT : NEGATIVE;
+      var acc = t.accountId ? s.accounts.find(function (a) { return a.id === t.accountId; }) : null;
+      var subtitle = fmtDate(t.date) + (acc ? ' &middot; ' + esc(acc.name) : '') + ' &middot; ' + esc(t.note || '—');
       return '<div class="list-row"><div style="display:flex;align-items:center;gap:10px;">' + avatarHtml(meta, 30) +
-        '<div><div style="font-size:14px;font-weight:500;">' + esc(t.category) + '</div><div class="muted" style="font-size:12px;">' + fmtDate(t.date) + ' &middot; ' + esc(t.note || '—') + '</div></div></div>' +
+        '<div><div style="font-size:14px;font-weight:500;">' + esc(t.category) + '</div><div class="muted" style="font-size:12px;">' + subtitle + '</div></div></div>' +
         '<div style="display:flex;align-items:center;gap:12px;"><div style="font-size:14px;font-weight:600;color:' + color + ';">' + amountFmt + '</div>' +
         '<button class="icon-btn" data-action="remove-tx" data-id="' + t.id + '" aria-label="Rimuovi movimento">' + xIcon() + '</button></div></div>';
     }).join('');
@@ -780,9 +1019,16 @@
     var createCatBox = s.showCreateCat ? renderCreateCat(s) : '';
     var manageBox = s.managingCategories ? renderManageCategories(s) : '';
 
+    var accountPickerHtml = s.accounts.length
+      ? '<select class="text-input" data-field="newTxAccountId" style="width:fit-content;"><option value="">Nessun conto</option>' + s.accounts.map(function (a) { return '<option value="' + a.id + '"' + (String(s.newTxAccountId) === String(a.id) ? ' selected' : '') + '>' + esc(a.name) + '</option>'; }).join('') + '</select>'
+      : '<div class="muted" style="font-size:12px;">Nessun conto disponibile: aggiungine uno in "Conti correnti" per collegare i movimenti al saldo.</div>';
+
     var addTxForm = s.showAddTx ? (
       '<div class="form-box" style="flex-direction:column;align-items:stretch;">' +
+      '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">' +
       '<select class="text-input" data-field="newTxType" style="width:fit-content;"><option value="uscita"' + (s.newTxType === 'uscita' ? ' selected' : '') + '>Uscita</option><option value="entrata"' + (s.newTxType === 'entrata' ? ' selected' : '') + '>Entrata</option></select>' +
+      accountPickerHtml +
+      '</div>' +
       '<div><div class="muted" style="font-size:13px;margin:10px 0;">Categoria</div><div style="display:flex;flex-wrap:wrap;gap:12px;">' + catGrid + '</div>' +
       '<div class="row" style="margin-top:10px;"><div class="muted" style="font-size:12px;">' + (s.newTxCategory ? 'Categoria: ' + esc(s.newTxCategory) : 'Scegli una categoria qui sopra') + '</div><button class="btn-link" data-action="toggle-manage-cats">Gestisci categorie</button></div></div>' +
       createCatBox + manageBox +
@@ -819,36 +1065,59 @@
     if (!s.showImport) return '';
     var html = '<div class="form-box" style="flex-direction:column;align-items:stretch;">' +
       '<div class="row" style="align-items:center;"><div style="font-size:14px;font-weight:600;">Importa movimenti da CSV, Excel o PDF</div><button class="btn-link" data-action="toggle" data-field="showImport">Chiudi</button></div>' +
-      '<div class="muted" style="font-size:12px;">Funziona con estratti conto o file esportati da Excel. Le righe vengono proposte per la revisione prima di essere aggiunte. La prima volta serve una connessione a internet per caricare le librerie di lettura.</div>' +
+      '<div class="muted" style="font-size:12px;">Funziona con estratti conto, file esportati da Excel (anche con fogli Expenses/Income/Transfers) o PDF. Le righe vengono proposte per la revisione prima di essere aggiunte. La prima volta serve una connessione a internet per caricare le librerie di lettura.</div>' +
       '<input type="file" accept=".csv,.xlsx,.xls,.pdf" data-action="import-file" style="margin-top:4px;">';
     if (s.importBusy) html += '<div class="muted" style="font-size:13px;">Analisi del file in corso...</div>';
     if (s.importError) html += '<div style="color:' + NEGATIVE + ';font-size:13px;">' + esc(s.importError) + '</div>';
+    if (s.importSuccess) html += '<div style="color:' + ACCENT + ';font-size:13px;font-weight:600;">' + esc(s.importSuccess) + '</div>';
     html += '</div>';
 
     if (!s.importRows.length) return html;
 
+    var newAccOpts = collectNewAccountOptions(s.importRows);
+
     var rows = s.importRows.map(function (r, idx) {
+      if (r.kind === 'transfer') {
+        return '<div class="list-row" style="flex-wrap:wrap;">' +
+          '<input type="checkbox" data-action="toggle-import-row" data-idx="' + idx + '" ' + (r.include ? 'checked' : '') + ' style="margin:0;">' +
+          '<span class="badge" style="background:#E4E2DC;color:#1E1D1B;">Giroconto</span>' +
+          '<input class="text-input" type="date" data-import-field="date" data-idx="' + idx + '" value="' + esc(r.date) + '" style="width:132px;">' +
+          '<select class="text-input" data-import-field="fromAccountChoice" data-idx="' + idx + '" style="width:140px;">' + accountSelectOptions(s.accounts, newAccOpts, r.fromAccountChoice) + '</select>' +
+          '<span class="muted">&rarr;</span>' +
+          '<select class="text-input" data-import-field="toAccountChoice" data-idx="' + idx + '" style="width:140px;">' + accountSelectOptions(s.accounts, newAccOpts, r.toAccountChoice) + '</select>' +
+          '<input class="text-input" type="text" inputmode="decimal" data-import-field="amount" data-idx="' + idx + '" value="' + esc(r.amount) + '" style="width:90px;">' +
+          '<button class="icon-btn" data-action="remove-import-row" data-idx="' + idx + '" aria-label="Rimuovi riga">' + xIcon() + '</button>' +
+          '</div>';
+      }
       var catList = r.type === 'entrata' ? s.incomeCategories : s.expenseCategories;
-      var catOptions = catList.map(function (c) {
-        return '<option value="' + esc(c.name) + '"' + (r.category === c.name ? ' selected' : '') + '>' + esc(c.name) + '</option>';
+      var catNames = catList.map(function (c) { return c.name; });
+      var extraCat = r.category && catNames.indexOf(r.category) === -1 ? [r.category] : [];
+      var catOptions = catNames.concat(extraCat).map(function (name) {
+        return '<option value="' + esc(name) + '"' + (r.category === name ? ' selected' : '') + '>' + esc(name) + (extraCat.indexOf(name) > -1 ? ' (nuova)' : '') + '</option>';
       }).join('');
       return '<div class="list-row" style="flex-wrap:wrap;">' +
         '<input type="checkbox" data-action="toggle-import-row" data-idx="' + idx + '" ' + (r.include ? 'checked' : '') + ' style="margin:0;">' +
         '<input class="text-input" type="date" data-import-field="date" data-idx="' + idx + '" value="' + esc(r.date) + '" style="width:132px;">' +
         '<select class="text-input" data-import-field="type" data-idx="' + idx + '" style="width:88px;"><option value="uscita"' + (r.type === 'uscita' ? ' selected' : '') + '>Uscita</option><option value="entrata"' + (r.type === 'entrata' ? ' selected' : '') + '>Entrata</option></select>' +
         '<select class="text-input" data-import-field="category" data-idx="' + idx + '" style="width:130px;">' + catOptions + '</select>' +
+        '<select class="text-input" data-import-field="accountChoice" data-idx="' + idx + '" style="width:140px;">' + accountSelectOptions(s.accounts, newAccOpts, r.accountChoice) + '</select>' +
         '<input class="text-input" type="text" data-import-field="note" data-idx="' + idx + '" value="' + esc(r.note) + '" placeholder="Descrizione" style="flex:1 1 140px;">' +
         '<input class="text-input" type="text" inputmode="decimal" data-import-field="amount" data-idx="' + idx + '" value="' + esc(r.amount) + '" style="width:90px;">' +
         '<button class="icon-btn" data-action="remove-import-row" data-idx="' + idx + '" aria-label="Rimuovi riga">' + xIcon() + '</button>' +
         '</div>';
     }).join('');
 
-    var includedCount = s.importRows.filter(function (r) { return r.include; }).length;
+    var includedTx = s.importRows.filter(function (r) { return r.include && r.kind !== 'transfer'; }).length;
+    var includedTransfer = s.importRows.filter(function (r) { return r.include && r.kind === 'transfer'; }).length;
+    var label = 'Importa';
+    if (includedTx) label += ' ' + includedTx + ' movimenti';
+    if (includedTransfer) label += (includedTx ? ' e ' : ' ') + includedTransfer + ' giroconti';
+    if (!includedTx && !includedTransfer) label += ' 0 righe';
 
     return html + '<div class="form-box" style="flex-direction:column;align-items:stretch;margin-top:10px;">' +
-      '<div class="muted" style="font-size:12px;">Controlla e correggi le righe prima di importare: la categoria è assegnata automaticamente dove possibile.</div>' +
+      '<div class="muted" style="font-size:12px;">Controlla e correggi le righe prima di importare: categoria e conto sono proposti automaticamente dove possibile. "+ Nuovo conto" crea il conto al momento dell\'import (senza duplicati se compare più volte).</div>' +
       '<div style="display:flex;flex-direction:column;gap:2px;max-height:360px;overflow:auto;">' + rows + '</div>' +
-      '<div><button class="btn btn-primary" data-action="confirm-import">Importa ' + includedCount + ' movimenti</button></div>' +
+      '<div><button class="btn btn-primary" data-action="confirm-import">' + label + '</button></div>' +
       '</div>';
   }
 
