@@ -40,9 +40,7 @@
 
   var RECUR_LABELS = { monthly: 'Ogni mese', quarterly: 'Ogni 3 mesi', semiannual: 'Ogni 6 mesi' };
 
-  var PERSIST_KEYS = ['accounts', 'debts', 'upcoming', 'portfolio', 'portfolios', 'transactions', 'goal', 'expenseCategories', 'incomeCategories', 'marketSymbols', 'twelveDataApiKey'];
-
-  var DEFAULT_MARKET_SYMBOLS = 'FOREXCOM:SPXUSD,NASDAQ:IXIC,BITSTAMP:BTCUSD,BITSTAMP:ETHUSD';
+  var PERSIST_KEYS = ['accounts', 'debts', 'upcoming', 'portfolio', 'portfolios', 'transactions', 'goal', 'expenseCategories', 'incomeCategories', 'twelveDataApiKey'];
 
   var CRYPTO_ID_MAP = {
     btc: 'bitcoin', bitcoin: 'bitcoin',
@@ -93,7 +91,6 @@
 
       showImportHoldings: false, importHoldingsBusy: false, importHoldingsError: '', importHoldingsSuccess: '', importHoldingsRows: [],
 
-      marketSymbols: DEFAULT_MARKET_SYMBOLS, marketSymbolsInput: DEFAULT_MARKET_SYMBOLS,
       twelveDataApiKey: '', showPriceSettings: false, priceKeyInput: '',
       priceRefreshBusy: false, priceRefreshStatus: '',
 
@@ -125,7 +122,6 @@
       }
     } catch (e) {}
   })();
-  state.marketSymbolsInput = state.marketSymbols;
 
   function save() {
     try {
@@ -444,6 +440,40 @@
     return String(v == null ? '' : v).trim();
   }
 
+  var CATEGORY_ALIASES = {
+    'other': 'Altro',
+    'home': 'Casa',
+    'health': 'Salute',
+    'groceries': 'Spesa',
+    'education': 'Formazione',
+    'transportation': 'Trasporti',
+    'leisure': 'Svago',
+    'gifts': 'Regali',
+    'gift': 'Regalo',
+    'paycheck': 'Stipendio',
+    'interest': 'Interessi',
+    'vinted': 'Vendite online',
+    'workout': 'Sport',
+    'pasto fuori': 'Ristoranti',
+    'prestito': 'Prestiti'
+  };
+  function resolveImportCategory(rawCategory, catList) {
+    if (!rawCategory) return null;
+    var lower = rawCategory.toLowerCase();
+    var i;
+    for (i = 0; i < catList.length; i++) {
+      if (catList[i].name.toLowerCase() === lower) return catList[i].name;
+    }
+    var alias = CATEGORY_ALIASES[lower];
+    if (alias) {
+      for (i = 0; i < catList.length; i++) {
+        if (catList[i].name.toLowerCase() === alias.toLowerCase()) return catList[i].name;
+      }
+      return alias;
+    }
+    return rawCategory;
+  }
+
   function buildTxItemsFromMappedSheet(sheet, categories) {
     var items = [];
     sheet.rows.forEach(function (row) {
@@ -463,7 +493,7 @@
       var rawNote = cellStr(row, sheet.map.note);
       var rawAccount = cellStr(row, sheet.map.account);
       var catList = typeVal === 'entrata' ? categories.incomeCategories : categories.expenseCategories;
-      var cat = rawCategory || guessCategory(rawNote, catList);
+      var cat = resolveImportCategory(rawCategory, catList) || guessCategory(rawNote, catList);
       items.push({ kind: 'tx', date: dateVal, note: rawNote, amount: String(absAmount.toFixed(2)).replace('.', ','), type: typeVal, category: cat, accountName: rawAccount, accountChoice: '', include: true });
     });
     return items;
@@ -684,12 +714,6 @@
       });
     },
 
-    saveMarketSymbols: function () {
-      var clean = state.marketSymbolsInput.split(',').map(function (s) { return s.trim(); }).filter(Boolean).join(',');
-      state.marketSymbols = clean || DEFAULT_MARKET_SYMBOLS;
-      save();
-      mountTickerTape(state.marketSymbols);
-    },
 
     togglePriceSettings: function () { update({ showPriceSettings: !state.showPriceSettings, priceKeyInput: state.twelveDataApiKey }); },
     savePriceKey: function () { update({ twelveDataApiKey: state.priceKeyInput.trim(), showPriceSettings: false }); },
@@ -1004,11 +1028,9 @@
       Object.keys(state).forEach(function (k) { delete state[k]; });
       Object.assign(state, fresh);
       PERSIST_KEYS.forEach(function (k) { if (data[k] !== undefined) state[k] = data[k]; });
-      state.marketSymbolsInput = state.marketSymbols;
       state.backupPreview = null;
       save();
       render();
-      renderMarkets();
     },
 
     toggleResetConfirm: function () { update({ showResetConfirm: !state.showResetConfirm, resetCodeInput: '', resetError: '' }); },
@@ -1744,48 +1766,6 @@
       '</div>';
   }
 
-  // ---------- markets section (rendered outside #app so it survives every re-render) ----------
-  function renderMarketsSection(s) {
-    return '<div style="width:100%;display:flex;justify-content:center;padding:0 14px 40px;">' +
-      '<div style="width:100%;max-width:720px;">' +
-      '<div class="card">' +
-      '<div class="section-title">Mercati</div>' +
-      '<div id="tv-ticker-tape"></div>' +
-      '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">' +
-      '<input class="text-input" type="text" data-field="marketSymbolsInput" value="' + esc(s.marketSymbolsInput) + '" placeholder="Simboli TradingView separati da virgola, es. NASDAQ:AAPL,BINANCE:BTCUSDT" style="flex:1 1 240px;">' +
-      '<button class="btn btn-ghost" data-action="save-market-symbols">Salva simboli</button>' +
-      '</div>' +
-      '</div></div></div>';
-  }
-
-  function mountTickerTape(symbolsStr) {
-    var container = document.getElementById('tv-ticker-tape');
-    if (!container) return;
-    container.innerHTML = '<div class="tradingview-widget-container"><div class="tradingview-widget-container__widget"></div></div>';
-    var symbols = symbolsStr.split(',').map(function (s) { return s.trim(); }).filter(Boolean);
-    if (!symbols.length) return;
-    var config = {
-      symbols: symbols.map(function (s) { return { proName: s, title: s.indexOf(':') > -1 ? s.split(':')[1] : s }; }),
-      showSymbolLogo: true,
-      isTransparent: false,
-      displayMode: 'adaptive',
-      colorTheme: 'light',
-      locale: 'it'
-    };
-    var script = document.createElement('script');
-    script.type = 'text/javascript';
-    script.src = 'https://s3.tradingview.com/external-embedding/embed-widget-ticker-tape.js';
-    script.async = true;
-    script.textContent = JSON.stringify(config);
-    container.querySelector('.tradingview-widget-container').appendChild(script);
-  }
-
-  function renderMarkets() {
-    var el = document.getElementById('markets');
-    if (!el) return;
-    el.innerHTML = renderMarketsSection(state);
-    mountTickerTape(state.marketSymbols);
-  }
 
   // ---------- focus-preserving render + event delegation ----------
   function renderPreserveFocus() {
@@ -1807,7 +1787,6 @@
 
   document.addEventListener('DOMContentLoaded', function () {
     render();
-    renderMarkets();
 
     document.addEventListener('click', function (e) {
       var el = e.target.closest('[data-action]');
@@ -1863,7 +1842,6 @@
         case 'refresh-prices': App.refreshPrices(); break;
         case 'toggle-price-settings': App.togglePriceSettings(); break;
         case 'save-price-key': App.savePriceKey(); break;
-        case 'save-market-symbols': App.saveMarketSymbols(); break;
         case 'toggle-import-holding-row': App.toggleImportHoldingRow(Number(el.dataset.idx)); break;
         case 'remove-import-holding-row': App.removeImportHoldingRow(Number(el.dataset.idx)); break;
         case 'confirm-import-holdings': App.confirmImportHoldings(); break;
