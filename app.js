@@ -75,7 +75,7 @@
       expenseCategories: DEFAULT_EXPENSE_CATEGORIES,
       incomeCategories: DEFAULT_INCOME_CATEGORIES,
 
-      period: 'mese', customFrom: '', customTo: '',
+      period: 'mese', customFrom: '', customTo: '', txCategoryFilter: '',
       editGoal: false, goalTargetInput: '', goalCurrentInput: '',
 
       showAddAccount: false, newAccountName: '', newAccountBank: '', newAccountBalance: '',
@@ -690,6 +690,8 @@
     setChecked: function (field, checked) { var p = {}; p[field] = checked; update(p); },
     toggle: toggle,
     pickPeriod: function (key) { update({ period: key }); },
+    filterTxCategory: function (name) { update({ txCategoryFilter: state.txCategoryFilter === name ? '' : name }); },
+    clearTxCategoryFilter: function () { update({ txCategoryFilter: '' }); },
 
     toggleEditGoal: function () {
       update({ editGoal: !state.editGoal, goalTargetInput: String(state.goal.target), goalCurrentInput: String(state.goal.current) });
@@ -706,14 +708,6 @@
       });
     },
     removeAccount: function (id) { update({ accounts: state.accounts.filter(function (a) { return a.id !== id; }) }); },
-    clearAccountTransactions: function (id) {
-      var linked = state.transactions.filter(function (t) { return t.accountId === id; });
-      if (!linked.length) return;
-      if (!window.confirm('Cancellare i ' + linked.length + ' movimenti già registrati su questo conto e riportare il saldo a 0? (Eventuali giroconti già applicati verranno azzerati insieme al resto.) Non si può annullare.')) return;
-      var transactions = state.transactions.filter(function (t) { return t.accountId !== id; });
-      var accounts = state.accounts.map(function (a) { return a.id === id ? Object.assign({}, a, { balance: 0 }) : a; });
-      update({ transactions: transactions, accounts: accounts });
-    },
     toggleExcludeAccount: function (id) {
       update({ accounts: state.accounts.map(function (a) { return a.id === id ? Object.assign({}, a, { excludeFromTotal: !a.excludeFromTotal }) : a; }) });
     },
@@ -1319,7 +1313,7 @@
     var html = '';
     html += '<div class="page"><div class="wrap">';
     html += renderHeader(s, netWorth, totalAccounts, totalPortfolio, totalDebt, totalCredit, urgent.length, urgentTotal, goalPct);
-    html += renderInsights(s, totalAccounts, totalDebt, totalPortfolio, monthlyIncome, monthlyExpense);
+    html += renderInsights(s, totalAccounts, totalDebt, monthlyIncome, monthlyExpense);
     html += renderTxSection(s, periodTx, periodIncome, periodExpense, periodNet, maxBar);
     html += renderAccounts(s);
     html += renderDebts(s);
@@ -1441,7 +1435,7 @@
       '</div>';
   }
 
-  function renderInsights(s, totalAccounts, totalDebt, totalPortfolio, monthlyIncome, monthlyExpense) {
+  function renderInsights(s, totalAccounts, totalDebt, monthlyIncome, monthlyExpense) {
     var cards = [];
     if (monthlyExpense > 0) {
       var months = totalAccounts / monthlyExpense;
@@ -1463,15 +1457,6 @@
     if (totalDebt <= 0) cards.push(insightCard('Debiti', fmt(0), 'A posto', ACCENT, 'rgba(31,111,92,0.1)', 'Nessun debito aperto: la liquidità in eccesso può andare a risparmio o investimenti.'));
     else if (totalDebt > totalAccounts) cards.push(insightCard('Debiti', fmt(totalDebt), 'Priorità', NEGATIVE, 'rgba(179,65,58,0.1)', 'I debiti superano la liquidità disponibile: prima di investire, valuta di saldarli, specie se a tasso alto.'));
     else cards.push(insightCard('Debiti', fmt(totalDebt), 'Da monitorare', WARN, 'rgba(176,137,0,0.1)', 'Hai debiti aperti: un debito "cattivo" (tasso alto, beni che si svalutano) va saldato prima di investire.'));
-
-    if (s.portfolio.length === 0) cards.push(insightCard('Diversificazione portafoglio', '&mdash;', 'N/D', '#6B6862', '#F0EFEA', 'Nessuna posizione registrata ancora.'));
-    else if (s.portfolio.length === 1) cards.push(insightCard('Diversificazione portafoglio', '1 posizione', 'Rischioso', NEGATIVE, 'rgba(179,65,58,0.1)', 'Puntare su un solo titolo espone a un rischio specifico alto: un ETF ampiamente diversificato riduce questo rischio a parità di rendimento atteso.'));
-    else {
-      var maxHolding = Math.max.apply(null, s.portfolio.map(function (h) { return Number(h.value || 0); }));
-      var concPct = totalPortfolio > 0 ? (maxHolding / totalPortfolio * 100) : 0;
-      if (concPct > 50) cards.push(insightCard('Diversificazione portafoglio', Math.round(concPct) + '% in 1 posizione', 'Concentrato', WARN, 'rgba(176,137,0,0.1)', 'Oltre metà del portafoglio è in una sola posizione: valuta di ribilanciare verso strumenti più diversificati.'));
-      else cards.push(insightCard('Diversificazione portafoglio', s.portfolio.length + ' posizioni', 'Distribuito', ACCENT, 'rgba(31,111,92,0.1)', 'Il portafoglio è distribuito su più posizioni, nessuna delle quali domina il totale.'));
-    }
 
     return '<div class="card"><div><div class="section-title">Salute finanziaria</div><div class="muted" style="font-size:13px;margin-top:4px;">Indicatori di base, calcolati sui tuoi dati del mese in corso.</div></div><div class="grid-fit">' + cards.join('') + '</div></div>';
   }
@@ -1496,17 +1481,23 @@
       '<div style="display:flex;flex-direction:column;gap:10px;"><div style="font-size:13px;font-weight:600;color:#6B6862;">Dove spendo di più</div>' +
       topCats.map(function (pair) {
         var meta = catMeta(s.expenseCategories.concat(s.incomeCategories), pair[0]);
-        return '<div style="display:flex;align-items:center;gap:10px;">' + avatarHtml(meta, 26) +
-          '<span style="width:100px;font-size:12px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + esc(pair[0]) + '</span>' +
+        var active = s.txCategoryFilter === pair[0];
+        return '<button data-action="filter-tx-category" data-cat="' + esc(pair[0]) + '" style="display:flex;align-items:center;gap:10px;background:none;border:none;padding:4px 2px;cursor:pointer;width:100%;text-align:left;border-radius:8px;' + (active ? 'background:#F0EFEA;' : '') + '">' + avatarHtml(meta, 26) +
+          '<span style="width:100px;font-size:12px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#1E1D1B;">' + esc(pair[0]) + '</span>' +
           '<div class="bar-track"><div class="bar-fill" style="background:' + meta.color + ';width:' + (pair[1] / maxCatVal * 100) + '%;"></div></div>' +
-          '<span style="font-size:12px;font-weight:600;width:80px;text-align:right;flex-shrink:0;">' + fmt(pair[1]) + '</span></div>';
+          '<span style="font-size:12px;font-weight:600;width:80px;text-align:right;flex-shrink:0;color:#1E1D1B;">' + fmt(pair[1]) + '</span></button>';
       }).join('') + '</div>'
     ) : '';
+
+    var filterNotice = s.txCategoryFilter ? (
+      '<div class="row" style="background:#F6F5F2;border-radius:8px;padding:8px 12px;"><span style="font-size:12px;">Filtro: <strong>' + esc(s.txCategoryFilter) + '</strong></span><button class="btn-link" data-action="clear-tx-category-filter">Rimuovi filtro ✕</button></div>'
+    ) : '';
+    var txSource = s.txCategoryFilter ? periodTx.filter(function (t) { return t.category === s.txCategoryFilter; }) : periodTx;
 
     var txAccountOptions = function (selectedId) {
       return '<option value="">Nessun conto</option>' + s.accounts.map(function (a) { return '<option value="' + a.id + '"' + (String(selectedId) === String(a.id) ? ' selected' : '') + '>' + esc(a.name) + '</option>'; }).join('');
     };
-    var txList = periodTx.slice().sort(function (a, b) { return new Date(b.date) - new Date(a.date); }).slice(0, 12).map(function (t) {
+    var txList = txSource.slice().sort(function (a, b) { return new Date(b.date) - new Date(a.date); }).slice(0, s.txCategoryFilter ? 200 : 12).map(function (t) {
       if (s.editingTxId === t.id) {
         var editCatList = s.editTxType === 'entrata' ? s.incomeCategories : s.expenseCategories;
         var editCatOptions = editCatList.map(function (c) { return '<option value="' + esc(c.name) + '"' + (s.editTxCategory === c.name ? ' selected' : '') + '>' + esc(c.name) + '</option>'; }).join('');
@@ -1585,6 +1576,7 @@
       '<div style="display:flex;align-items:center;gap:10px;"><span style="width:56px;font-size:12px;color:#6B6862;">Uscite</span><div class="bar-track"><div class="bar-fill" style="background:' + NEGATIVE + ';width:' + (periodExpense / maxBar * 100) + '%;"></div></div></div>' +
       '</div>' +
       topCatsHtml +
+      filterNotice +
       '<div style="display:flex;flex-direction:column;gap:2px;border-top:1px solid #E4E2DC;padding-top:10px;">' + (txList || '<div class="muted" style="font-size:13px;padding:10px 4px;">Nessun movimento in questo periodo.</div>') + '</div>' +
       '<div><button class="btn btn-primary" data-action="toggle" data-field="showAddTx">+ Aggiungi movimento</button>' + addTxForm + '</div>' +
       '</div>';
@@ -1701,9 +1693,6 @@
         '<button class="icon-btn" data-action="remove-account" data-id="' + a.id + '" aria-label="Rimuovi conto">' + xIcon() + '</button></div>' +
         balanceBlock +
         '<label style="display:flex;align-items:center;gap:7px;font-size:12px;color:' + (a.excludeFromTotal ? WARN : '#6B6862') + ';cursor:pointer;"><input type="checkbox" data-field="account-exclude-' + a.id + '" data-action="toggle-exclude" data-id="' + a.id + '" ' + (a.excludeFromTotal ? 'checked' : '') + ' style="margin:0;">' + (a.excludeFromTotal ? 'Escluso dal totale' : 'Incluso nel totale') + '</label>' +
-        (s.transactions.some(function (t) { return t.accountId === a.id; })
-          ? '<button class="btn-link" data-action="clear-account-tx" data-id="' + a.id + '" style="color:' + NEGATIVE + ';">Svuota movimenti di questo conto</button>'
-          : '') +
         '</div>';
     }).join('');
 
@@ -1965,11 +1954,12 @@
       switch (action) {
         case 'toggle': App.toggle(el.dataset.field); break;
         case 'pick-period': App.pickPeriod(el.dataset.key); break;
+        case 'filter-tx-category': App.filterTxCategory(el.dataset.cat); break;
+        case 'clear-tx-category-filter': App.clearTxCategoryFilter(); break;
         case 'toggle-edit-goal': App.toggleEditGoal(); break;
         case 'save-goal': App.saveGoal(); break;
         case 'add-account': App.addAccount(); break;
         case 'remove-account': App.removeAccount(numId); break;
-        case 'clear-account-tx': App.clearAccountTransactions(numId); break;
         case 'toggle-exclude': App.toggleExcludeAccount(numId); break;
         case 'start-edit-balance': App.startEditBalance(numId); break;
         case 'save-edit-balance': App.saveEditBalance(numId); break;
