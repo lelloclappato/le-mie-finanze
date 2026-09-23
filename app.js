@@ -56,7 +56,9 @@
     usdt: 'tether', tether: 'tether',
     usdc: 'usd-coin',
     bnb: 'binancecoin',
-    ltc: 'litecoin', litecoin: 'litecoin'
+    ltc: 'litecoin', litecoin: 'litecoin',
+    link: 'chainlink', chainlink: 'chainlink',
+    hbar: 'hedera-hashgraph', hedera: 'hedera-hashgraph'
   };
 
   function defaultState() {
@@ -88,6 +90,8 @@
       showAddPortfolio: false, newPortfolioName: '',
       editingHoldingId: null, editHoldingName: '', editHoldingValue: '', editHoldingChange: '',
       editHoldingTicker: '', editHoldingQty: '', editHoldingAssetType: 'stock',
+
+      showImportHoldings: false, importHoldingsBusy: false, importHoldingsError: '', importHoldingsSuccess: '', importHoldingsRows: [],
 
       marketSymbols: DEFAULT_MARKET_SYMBOLS, marketSymbolsInput: DEFAULT_MARKET_SYMBOLS,
       twelveDataApiKey: '', showPriceSettings: false, priceKeyInput: '',
@@ -689,6 +693,86 @@
 
     togglePriceSettings: function () { update({ showPriceSettings: !state.showPriceSettings, priceKeyInput: state.twelveDataApiKey }); },
     savePriceKey: function () { update({ twelveDataApiKey: state.priceKeyInput.trim(), showPriceSettings: false }); },
+
+    handleHoldingsImportFile: function (file) {
+      if (!file) return;
+      update({ importHoldingsBusy: true, importHoldingsError: '', importHoldingsSuccess: '', importHoldingsRows: [] });
+      file.text().then(function (text) {
+        var rows = parseCSV(text);
+        if (!rows.length) throw new Error('File vuoto.');
+        var header = rows[0].map(function (h) { return h.toLowerCase().trim(); });
+        var idx = {
+          portfolio: header.indexOf('portafoglio'), name: header.indexOf('nome'), ticker: header.indexOf('ticker'),
+          type: header.indexOf('tipo'), qty: header.indexOf('quantita') > -1 ? header.indexOf('quantita') : header.indexOf('quantità'),
+          value: header.indexOf('valore'), change: header.indexOf('variazione')
+        };
+        if (idx.name === -1 || idx.value === -1) throw new Error('Il file deve avere almeno le colonne "Nome" e "Valore".');
+        var items = rows.slice(1).filter(function (r) { return r.length > 1 && r[idx.name]; }).map(function (r) {
+          var typeRaw = idx.type > -1 ? r[idx.type].toLowerCase().trim() : 'stock';
+          return {
+            portfolioName: idx.portfolio > -1 && r[idx.portfolio] ? r[idx.portfolio].trim() : 'Portafoglio importato',
+            name: r[idx.name].trim(),
+            ticker: idx.ticker > -1 ? r[idx.ticker].trim().toUpperCase() : '',
+            assetType: /crypto/.test(typeRaw) ? 'crypto' : 'stock',
+            qty: idx.qty > -1 ? r[idx.qty].trim() : '',
+            value: idx.value > -1 ? r[idx.value].trim() : '0',
+            change: idx.change > -1 ? r[idx.change].trim() : '0',
+            include: true
+          };
+        });
+        if (!items.length) throw new Error('Nessuna riga valida trovata.');
+        update({ importHoldingsBusy: false, importHoldingsRows: items });
+      }).catch(function (err) {
+        update({ importHoldingsBusy: false, importHoldingsError: err.message || 'Errore nella lettura del file.' });
+      });
+    },
+    setImportHoldingField: function (idx, field, value) {
+      var rows = state.importHoldingsRows.slice();
+      if (!rows[idx]) return;
+      rows[idx] = Object.assign({}, rows[idx], (function () { var o = {}; o[field] = value; return o; })());
+      state.importHoldingsRows = rows;
+      save();
+      renderPreserveFocus();
+    },
+    toggleImportHoldingRow: function (idx) {
+      var rows = state.importHoldingsRows.slice();
+      if (!rows[idx]) return;
+      rows[idx] = Object.assign({}, rows[idx], { include: !rows[idx].include });
+      update({ importHoldingsRows: rows });
+    },
+    removeImportHoldingRow: function (idx) {
+      update({ importHoldingsRows: state.importHoldingsRows.filter(function (_, i) { return i !== idx; }) });
+    },
+    confirmImportHoldings: function () {
+      var included = state.importHoldingsRows.filter(function (r) { return r.include; });
+      if (!included.length) { update({ importHoldingsRows: [] }); return; }
+
+      var portfolios = state.portfolios.slice();
+      var portfolioIdByName = {};
+      portfolios.forEach(function (p) { portfolioIdByName[p.name.toLowerCase()] = p.id; });
+      function resolvePortfolio(name) {
+        var key = name.toLowerCase();
+        if (portfolioIdByName[key]) return portfolioIdByName[key];
+        var p = { id: uid(), name: name };
+        portfolios.push(p);
+        portfolioIdByName[key] = p.id;
+        return p.id;
+      }
+
+      var newHoldings = included.map(function (r) {
+        return {
+          id: uid(), name: r.name, value: numVal(r.value) || 0, changePct: numVal(r.change) || 0,
+          portfolioId: resolvePortfolio(r.portfolioName), ticker: r.ticker, assetType: r.assetType,
+          quantity: r.qty === '' ? null : (numVal(r.qty) || 0)
+        };
+      });
+
+      update({
+        portfolios: portfolios, portfolio: state.portfolio.concat(newHoldings),
+        showImportHoldings: true, importHoldingsRows: [], importHoldingsError: '',
+        importHoldingsSuccess: newHoldings.length + ' posizioni aggiunte.'
+      });
+    },
 
     refreshPrices: function () {
       var trackable = state.portfolio.filter(function (h) { return h.ticker && h.quantity != null && h.assetType; });
@@ -1622,8 +1706,42 @@
     return '<div class="card"><div class="row"><div class="section-title">Portafogli</div><div style="font-size:13px;color:#6B6862;">Totale: <span style="font-weight:600;color:#1E1D1B;">' + fmt(totalPortfolio) + '</span></div></div>' +
       refreshRow +
       sections +
-      '<div style="display:flex;flex-wrap:wrap;gap:10px;"><button class="btn btn-primary" data-action="toggle" data-field="showAddHolding">+ Aggiungi posizione</button><button class="btn btn-ghost" data-action="toggle" data-field="showAddPortfolio">+ Nuovo portafoglio</button></div>' +
-      addHoldingForm + addPortfolioForm + '</div>';
+      '<div style="display:flex;flex-wrap:wrap;gap:10px;"><button class="btn btn-primary" data-action="toggle" data-field="showAddHolding">+ Aggiungi posizione</button><button class="btn btn-ghost" data-action="toggle" data-field="showAddPortfolio">+ Nuovo portafoglio</button><button class="btn btn-ghost" data-action="toggle" data-field="showImportHoldings">Importa posizioni</button></div>' +
+      addHoldingForm + addPortfolioForm + renderImportHoldingsPanel(s) + '</div>';
+  }
+
+  function renderImportHoldingsPanel(s) {
+    if (!s.showImportHoldings) return '';
+    var html = '<div class="form-box" style="flex-direction:column;align-items:stretch;margin-top:10px;">' +
+      '<div class="row" style="align-items:center;"><div style="font-size:14px;font-weight:600;">Importa posizioni da CSV</div><button class="btn-link" data-action="toggle" data-field="showImportHoldings">Chiudi</button></div>' +
+      '<div class="muted" style="font-size:12px;">Colonne: Portafoglio, Nome, Ticker, Tipo (stock/crypto), Quantita, Valore, Variazione. Le posizioni si aggiungono a quelle esistenti, non le sostituiscono.</div>' +
+      '<input type="file" accept=".csv" data-action="import-holdings-file" style="margin-top:4px;">';
+    if (s.importHoldingsBusy) html += '<div class="muted" style="font-size:13px;">Analisi del file in corso...</div>';
+    if (s.importHoldingsError) html += '<div style="color:' + NEGATIVE + ';font-size:13px;">' + esc(s.importHoldingsError) + '</div>';
+    if (s.importHoldingsSuccess) html += '<div style="color:' + ACCENT + ';font-size:13px;font-weight:600;">' + esc(s.importHoldingsSuccess) + '</div>';
+    html += '</div>';
+
+    if (!s.importHoldingsRows.length) return html;
+
+    var rows = s.importHoldingsRows.map(function (r, idx) {
+      return '<div class="list-row" style="flex-wrap:wrap;">' +
+        '<input type="checkbox" data-action="toggle-import-holding-row" data-idx="' + idx + '" ' + (r.include ? 'checked' : '') + ' style="margin:0;">' +
+        '<input class="text-input" type="text" data-import-holding-field="portfolioName" data-idx="' + idx + '" value="' + esc(r.portfolioName) + '" placeholder="Portafoglio" style="width:150px;">' +
+        '<input class="text-input" type="text" data-import-holding-field="name" data-idx="' + idx + '" value="' + esc(r.name) + '" placeholder="Nome" style="flex:1 1 140px;">' +
+        '<input class="text-input" type="text" data-import-holding-field="ticker" data-idx="' + idx + '" value="' + esc(r.ticker) + '" placeholder="Ticker" style="width:80px;">' +
+        '<select class="text-input" data-import-holding-field="assetType" data-idx="' + idx + '" style="width:100px;"><option value="stock"' + (r.assetType === 'stock' ? ' selected' : '') + '>Azione/ETF</option><option value="crypto"' + (r.assetType === 'crypto' ? ' selected' : '') + '>Crypto</option></select>' +
+        '<input class="text-input" type="text" inputmode="decimal" data-import-holding-field="qty" data-idx="' + idx + '" value="' + esc(r.qty) + '" placeholder="Quantità" style="width:90px;">' +
+        '<input class="text-input" type="text" inputmode="decimal" data-import-holding-field="value" data-idx="' + idx + '" value="' + esc(r.value) + '" placeholder="Valore" style="width:90px;">' +
+        '<input class="text-input" type="text" inputmode="decimal" data-import-holding-field="change" data-idx="' + idx + '" value="' + esc(r.change) + '" placeholder="Var. %" style="width:80px;">' +
+        '<button class="icon-btn" data-action="remove-import-holding-row" data-idx="' + idx + '" aria-label="Rimuovi riga">' + xIcon() + '</button>' +
+        '</div>';
+    }).join('');
+    var includedCount = s.importHoldingsRows.filter(function (r) { return r.include; }).length;
+
+    return html + '<div class="form-box" style="flex-direction:column;align-items:stretch;margin-top:10px;">' +
+      '<div style="display:flex;flex-direction:column;gap:2px;max-height:360px;overflow:auto;">' + rows + '</div>' +
+      '<div><button class="btn btn-primary" data-action="confirm-import-holdings">Importa ' + includedCount + ' posizioni</button></div>' +
+      '</div>';
   }
 
   // ---------- markets section (rendered outside #app so it survives every re-render) ----------
@@ -1746,6 +1864,9 @@
         case 'toggle-price-settings': App.togglePriceSettings(); break;
         case 'save-price-key': App.savePriceKey(); break;
         case 'save-market-symbols': App.saveMarketSymbols(); break;
+        case 'toggle-import-holding-row': App.toggleImportHoldingRow(Number(el.dataset.idx)); break;
+        case 'remove-import-holding-row': App.removeImportHoldingRow(Number(el.dataset.idx)); break;
+        case 'confirm-import-holdings': App.confirmImportHoldings(); break;
         case 'confirm-reset': App.confirmReset(); break;
         case 'toggle-import-row': App.toggleImportRow(Number(el.dataset.idx)); break;
         case 'remove-import-row': App.removeImportRow(Number(el.dataset.idx)); break;
@@ -1777,6 +1898,14 @@
       }
       if (t.type === 'file' && t.dataset && t.dataset.action === 'import-backup-file') {
         if (t.files && t.files[0]) App.handleBackupFile(t.files[0]);
+        return;
+      }
+      if (t.type === 'file' && t.dataset && t.dataset.action === 'import-holdings-file') {
+        if (t.files && t.files[0]) App.handleHoldingsImportFile(t.files[0]);
+        return;
+      }
+      if (t.dataset && t.dataset.importHoldingField) {
+        App.setImportHoldingField(Number(t.dataset.idx), t.dataset.importHoldingField, t.value);
         return;
       }
       if (t.dataset && t.dataset.importField) {
