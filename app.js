@@ -26,17 +26,30 @@
     });
   }
 
+  // Categorie "neutre": spostamenti di soldi tuoi (giroconti, acquisto/vendita titoli).
+  // Aggiornano il saldo del conto ma NON contano come entrate/uscite nei totali.
+  var NEUTRAL_EXPENSE_NAMES = ['giroconti', 'investimenti'];
+  var NEUTRAL_INCOME_NAMES = ['giroconti', 'vendita titoli'];
+  function isNeutralDefaultName(name, type) {
+    var list = type === 'entrata' ? NEUTRAL_INCOME_NAMES : NEUTRAL_EXPENSE_NAMES;
+    return list.indexOf(String(name || '').toLowerCase().trim()) > -1;
+  }
+
   var DEFAULT_EXPENSE_CATEGORIES = makeDefaultCategories([
     ['Salute', 'heart'], ['Svago', ''], ['Casa', 'home'], ['Bar', 'coffee'], ['Formazione', 'book'],
     ['Regali', 'gift'], ['Spesa', 'cart'], ['Famiglia', ''], ['Sport', ''], ['Trasporti', 'car'],
     ['Ristoranti', ''], ['Investimenti', 'moneybag'], ['Prestiti', ''], ['Abbonamenti', ''],
-    ['Abbigliamento', ''], ['Tech', ''], ['Altro', '']
-  ], 'e');
+    ['Abbigliamento', ''], ['Tech', ''], ['Giroconti', ''], ['Altro', '']
+  ], 'e').map(function (c) { if (isNeutralDefaultName(c.name, 'uscita')) c.neutral = true; return c; });
 
   var DEFAULT_INCOME_CATEGORIES = makeDefaultCategories([
     ['Stipendio', 'moneybag'], ['Freelance', ''], ['Regalo', 'gift'], ['Interessi', ''],
-    ['Vendite online', 'cart'], ['Investimenti', 'moneybag'], ['Altro', '']
-  ], 'i');
+    ['Vendite online', 'cart'], ['Investimenti', 'moneybag'], ['Vendita titoli', ''], ['Giroconti', ''], ['Altro', '']
+  ], 'i').map(function (c) { if (isNeutralDefaultName(c.name, 'entrata')) c.neutral = true; return c; });
+
+  var APP_VERSION = '2.0';
+  var DATA_VERSION = 2;
+  var BACKUP_REMINDER_DAYS = 30;
 
   var RECUR_LABELS = {
     daily: 'Ogni giorno', weekly: 'Ogni settimana', monthly: 'Ogni mese', quarterly: 'Ogni 3 mesi',
@@ -44,7 +57,10 @@
   };
   var CUSTOM_UNIT_LABELS = { days: 'giorni', weeks: 'settimane', months: 'mesi' };
 
-  var PERSIST_KEYS = ['accounts', 'debts', 'upcoming', 'portfolio', 'portfolios', 'transactions', 'goal', 'expenseCategories', 'incomeCategories', 'twelveDataApiKey'];
+  var PERSIST_KEYS = ['accounts', 'debts', 'upcoming', 'portfolio', 'portfolios', 'transactions', 'goal', 'expenseCategories', 'incomeCategories',
+    'twelveDataApiKey', 'alphaVantageApiKey', 'history', 'transferLog', 'lastBackupAt', 'dataVersion'];
+  // Chiavi API: restano sul telefono, non finiscono mai nel file di backup.
+  var SECRET_KEYS = ['twelveDataApiKey', 'alphaVantageApiKey'];
 
   var CRYPTO_ID_MAP = {
     btc: 'bitcoin', bitcoin: 'bitcoin',
@@ -74,6 +90,10 @@
       goal: { label: 'Fondo emergenza', target: 0, current: 0 },
       expenseCategories: DEFAULT_EXPENSE_CATEGORIES,
       incomeCategories: DEFAULT_INCOME_CATEGORIES,
+      history: [], transferLog: [], lastBackupAt: null, dataVersion: DATA_VERSION,
+      alphaVantageApiKey: '', avKeyInput: '',
+      monthViewKey: '', showBudgets: false, showAddHistory: false, newHistoryMonth: '', newHistoryValue: '',
+      updateReady: false,
 
       period: 'mese', customFrom: '', customTo: '', txCategoryFilter: '',
       editGoal: false, goalTargetInput: '', goalCurrentInput: '',
@@ -89,10 +109,10 @@
       newPaymentAccountId: '', newPaymentTime: '', newPaymentEndDate: '', newPaymentCustomValue: '1', newPaymentCustomUnit: 'months',
 
       showAddHolding: false, newHoldingName: '', newHoldingValue: '', newHoldingChange: '', newHoldingPortfolioId: '1',
-      newHoldingTicker: '', newHoldingQty: '', newHoldingAssetType: 'stock',
+      newHoldingTicker: '', newHoldingQty: '', newHoldingAssetType: 'stock', newHoldingInvested: '',
       showAddPortfolio: false, newPortfolioName: '',
       editingHoldingId: null, editHoldingName: '', editHoldingValue: '', editHoldingChange: '',
-      editHoldingTicker: '', editHoldingQty: '', editHoldingAssetType: 'stock',
+      editHoldingTicker: '', editHoldingQty: '', editHoldingAssetType: 'stock', editHoldingInvested: '',
 
       showImportHoldings: false, importHoldingsBusy: false, importHoldingsError: '', importHoldingsSuccess: '', importHoldingsRows: [],
 
@@ -124,12 +144,70 @@
         PERSIST_KEYS.forEach(function (k) {
           if (saved[k] !== undefined) state[k] = saved[k];
         });
+        if (saved.dataVersion === undefined) state.dataVersion = 1; // dati di una versione precedente
       }
     } catch (e) {}
+    migrate();
+    save();
   })();
+
+  // Aggiorna i dati salvati con versioni precedenti dell'app.
+  function migrate() {
+    if (!Array.isArray(state.history)) state.history = [];
+    if (!Array.isArray(state.transferLog)) state.transferLog = [];
+    if (typeof state.alphaVantageApiKey !== 'string') state.alphaVantageApiKey = '';
+    if ((state.dataVersion || 1) < 2) {
+      // v2: giroconti e compravendita titoli non contano più come spese/entrate
+      var fix = function (list, type, extraNames) {
+        list = (list || []).map(function (c) {
+          if (c.neutral === undefined && isNeutralDefaultName(c.name, type)) return Object.assign({}, c, { neutral: true });
+          return c;
+        });
+        extraNames.forEach(function (name) {
+          var exists = list.some(function (c) { return c.name.toLowerCase() === name.toLowerCase(); });
+          if (!exists) list.push({ id: uid(), name: name, color: '#6B6862', icon: '', neutral: true });
+        });
+        return list;
+      };
+      state.expenseCategories = fix(state.expenseCategories, 'uscita', ['Giroconti']);
+      state.incomeCategories = fix(state.incomeCategories, 'entrata', ['Giroconti', 'Vendita titoli']);
+      state.dataVersion = 2;
+    }
+  }
+
+  // ---------- storico patrimonio ----------
+  function monthKey(d) { d = d || new Date(); return d.getFullYear() + '-' + pad2(d.getMonth() + 1); }
+  function computeTotals(s) {
+    var acc = s.accounts.filter(function (a) { return !a.excludeFromTotal; }).reduce(function (sum, a) { return sum + Number(a.balance || 0); }, 0);
+    var port = s.portfolio.reduce(function (sum, h) { return sum + Number(h.value || 0); }, 0);
+    var debt = s.debts.filter(function (d) { return d.kind === 'devo'; }).reduce(function (sum, d) { return sum + Number(d.amount || 0); }, 0);
+    var cred = s.debts.filter(function (d) { return d.kind === 'mi deve'; }).reduce(function (sum, d) { return sum + Number(d.amount || 0); }, 0);
+    return { acc: acc, port: port, debt: debt, cred: cred, nw: acc + port + cred - debt };
+  }
+  function round2(n) { return Math.round((Number(n) || 0) * 100) / 100; }
+  // Una "foto" per mese: il valore del mese corrente si aggiorna finché il mese non finisce.
+  function updateHistorySnapshot() {
+    var s = state;
+    if (!s.accounts.length && !s.portfolio.length && !s.debts.length) return;
+    var t = computeTotals(s);
+    var key = monthKey();
+    var snap = { m: key, d: isoFromDate(new Date()), acc: round2(t.acc), port: round2(t.port), cred: round2(t.cred), debt: round2(t.debt), nw: round2(t.nw) };
+    var hist = s.history || [];
+    var idx = -1;
+    for (var i = 0; i < hist.length; i++) { if (hist[i].m === key) { idx = i; break; } }
+    if (idx > -1) {
+      var old = hist[idx];
+      if (!old.manual && old.nw === snap.nw && old.acc === snap.acc && old.port === snap.port && old.d === snap.d) return;
+      hist = hist.slice(); hist[idx] = snap;
+    } else {
+      hist = hist.concat([snap]).sort(function (a, b) { return a.m < b.m ? -1 : 1; });
+    }
+    s.history = hist;
+  }
 
   function save() {
     try {
+      updateHistorySnapshot();
       var data = {};
       PERSIST_KEYS.forEach(function (k) { data[k] = state[k]; });
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
@@ -149,7 +227,7 @@
     return new Date(d).toLocaleDateString('it-IT', { day: '2-digit', month: 'short', year: 'numeric' });
   }
   var uidSeq = 0;
-  function uid() { uidSeq = (uidSeq + 1) % 1000; return Date.now() * 1000 + uidSeq; }
+  function uid() { uidSeq = ((uidSeq || 0) + 1) % 1000; return Date.now() * 1000 + uidSeq; }
 
   function numVal(v) {
     if (v === '' || v == null) return NaN;
@@ -179,6 +257,7 @@
     return new Promise(function (resolve, reject) {
       if (document.querySelector('script[data-src="' + src + '"]')) { resolve(); return; }
       var s = document.createElement('script');
+      s.crossOrigin = 'anonymous'; // risposta CORS: il service worker la può salvare per l'uso offline
       s.src = src; s.dataset.src = src;
       s.onload = function () { resolve(); };
       s.onerror = function () { reject(new Error('Impossibile caricare la libreria necessaria (' + src + ').')); };
@@ -480,7 +559,7 @@
       var note, category;
       if (rowCat === 'TRADING') {
         note = (name + ' ' + desc).trim();
-        category = 'Investimenti';
+        category = type === 'entrata' ? 'Vendita titoli' : 'Investimenti';
       } else {
         note = (desc || counterparty || name).replace(/null$/i, '').trim();
         var catList = type === 'entrata' ? categories.incomeCategories : categories.expenseCategories;
@@ -640,6 +719,41 @@
     return items;
   }
 
+  // ---------- controllo doppioni all'import ----------
+  function normNote(s) { return String(s || '').toLowerCase().replace(/\s+/g, ' ').trim(); }
+  function amountKey(v) { var n = typeof v === 'number' ? v : numVal(v); return isNaN(n) ? '0.00' : Math.abs(n).toFixed(2); }
+  function txWeakKey(date, amount, type) { return date + '|' + amountKey(amount) + '|' + type; }
+  function txStrongKey(date, amount, type, note) { return txWeakKey(date, amount, type) + '|' + normNote(note); }
+  function transferKey(r) { return r.date + '|' + amountKey(r.amount) + '|' + normNote(r.fromAccountName) + '>' + normNote(r.toAccountName); }
+
+  // Segna le righe già presenti nei movimenti salvati. Usa un conteggio, così due caffè
+  // identici nello stesso giorno restano entrambi importabili se in app ce n'è uno solo.
+  function markImportDuplicates(items, transactions, transferLog) {
+    var strong = {}, weak = {}, transfers = {};
+    transactions.forEach(function (t) {
+      var sk = txStrongKey(t.date, t.amount, t.type, t.note), wk = txWeakKey(t.date, t.amount, t.type);
+      strong[sk] = (strong[sk] || 0) + 1;
+      weak[wk] = (weak[wk] || 0) + 1;
+    });
+    (transferLog || []).forEach(function (k) { transfers[k] = (transfers[k] || 0) + 1; });
+    // prima i match esatti, poi quelli "simili" (stessa data, importo e tipo)
+    items.forEach(function (it) {
+      if (it.kind === 'transfer') {
+        var tk = transferKey(it);
+        if (transfers[tk]) { transfers[tk]--; it.dup = 'exact'; it.include = false; }
+        return;
+      }
+      var sk = txStrongKey(it.date, it.amount, it.type, it.note), wk = txWeakKey(it.date, it.amount, it.type);
+      if (strong[sk]) { strong[sk]--; weak[wk]--; it.dup = 'exact'; it.include = false; }
+    });
+    items.forEach(function (it) {
+      if (it.kind === 'transfer' || it.dup) return;
+      var wk = txWeakKey(it.date, it.amount, it.type);
+      if (weak[wk] > 0) { weak[wk]--; it.dup = 'similar'; it.include = false; }
+    });
+    return items;
+  }
+
   function collectNewAccountOptions(importRows) {
     var seen = {}, list = [];
     importRows.forEach(function (r) {
@@ -690,6 +804,19 @@
     setChecked: function (field, checked) { var p = {}; p[field] = checked; update(p); },
     toggle: toggle,
     pickPeriod: function (key) { update({ period: key }); },
+    pickMonth: function (key) { update({ monthViewKey: key }); },
+    addHistory: function () {
+      var m = state.newHistoryMonth, v = numVal(state.newHistoryValue);
+      if (!/^\d{4}-\d{2}$/.test(m) || isNaN(v) || m >= monthKey()) return;
+      var hist = (state.history || []).filter(function (h) { return h.m !== m; });
+      hist.push({ m: m, d: m + '-28', acc: null, port: null, cred: null, debt: null, nw: round2(v), manual: true });
+      hist.sort(function (a, b) { return a.m < b.m ? -1 : 1; });
+      update({ history: hist, newHistoryMonth: '', newHistoryValue: '', showAddHistory: false });
+    },
+    removeHistory: function (m) {
+      update({ history: (state.history || []).filter(function (h) { return !(h.m === m && h.manual); }) });
+    },
+    toggleBudgets: function () { update({ showBudgets: !state.showBudgets, managingCategories: false, showCreateCat: false, editingCatId: null }); },
     filterTxCategory: function (name) { update({ txCategoryFilter: state.txCategoryFilter === name ? '' : name }); },
     clearTxCategoryFilter: function () { update({ txCategoryFilter: '' }); },
 
@@ -768,9 +895,10 @@
       update({
         portfolio: state.portfolio.concat([{
           id: uid(), name: state.newHoldingName, value: numVal(state.newHoldingValue) || 0, changePct: numVal(state.newHoldingChange) || 0, portfolioId: pid,
-          ticker: state.newHoldingTicker.trim().toUpperCase(), quantity: state.newHoldingQty === '' ? null : (numVal(state.newHoldingQty) || 0), assetType: state.newHoldingAssetType
+          ticker: state.newHoldingTicker.trim().toUpperCase(), quantity: state.newHoldingQty === '' ? null : (numVal(state.newHoldingQty) || 0), assetType: state.newHoldingAssetType,
+          invested: state.newHoldingInvested === '' ? null : (numVal(state.newHoldingInvested) || 0)
         }]),
-        newHoldingName: '', newHoldingValue: '', newHoldingChange: '', newHoldingTicker: '', newHoldingQty: '', newHoldingAssetType: 'stock', showAddHolding: false
+        newHoldingName: '', newHoldingValue: '', newHoldingChange: '', newHoldingTicker: '', newHoldingQty: '', newHoldingAssetType: 'stock', newHoldingInvested: '', showAddHolding: false
       });
     },
     removeHolding: function (id) { update({ portfolio: state.portfolio.filter(function (h) { return h.id !== id; }) }); },
@@ -779,7 +907,8 @@
       if (!h) return;
       update({
         editingHoldingId: id, editHoldingName: h.name, editHoldingValue: String(h.value), editHoldingChange: String(h.changePct),
-        editHoldingTicker: h.ticker || '', editHoldingQty: h.quantity != null ? String(h.quantity) : '', editHoldingAssetType: h.assetType || 'stock'
+        editHoldingTicker: h.ticker || '', editHoldingQty: h.quantity != null ? String(h.quantity) : '', editHoldingAssetType: h.assetType || 'stock',
+        editHoldingInvested: h.invested != null ? String(h.invested).replace('.', ',') : ''
       });
     },
     cancelEditHolding: function () { update({ editingHoldingId: null }); },
@@ -790,10 +919,11 @@
         portfolio: state.portfolio.map(function (h) {
           return h.id === id ? Object.assign({}, h, {
             name: name, value: numVal(state.editHoldingValue) || 0, changePct: numVal(state.editHoldingChange) || 0,
-            ticker: state.editHoldingTicker.trim().toUpperCase(), quantity: state.editHoldingQty === '' ? null : (numVal(state.editHoldingQty) || 0), assetType: state.editHoldingAssetType
+            ticker: state.editHoldingTicker.trim().toUpperCase(), quantity: state.editHoldingQty === '' ? null : (numVal(state.editHoldingQty) || 0), assetType: state.editHoldingAssetType,
+            invested: state.editHoldingInvested === '' ? null : (numVal(state.editHoldingInvested) || 0)
           }) : h;
         }),
-        editingHoldingId: null, editHoldingName: '', editHoldingValue: '', editHoldingChange: '', editHoldingTicker: '', editHoldingQty: '', editHoldingAssetType: 'stock'
+        editingHoldingId: null, editHoldingName: '', editHoldingValue: '', editHoldingChange: '', editHoldingTicker: '', editHoldingQty: '', editHoldingAssetType: 'stock', editHoldingInvested: ''
       });
     },
     toggleAddPortfolio: function () { update({ showAddPortfolio: !state.showAddPortfolio }); },
@@ -812,8 +942,8 @@
     },
 
 
-    togglePriceSettings: function () { update({ showPriceSettings: !state.showPriceSettings, priceKeyInput: state.twelveDataApiKey }); },
-    savePriceKey: function () { update({ twelveDataApiKey: state.priceKeyInput.trim(), showPriceSettings: false }); },
+    togglePriceSettings: function () { update({ showPriceSettings: !state.showPriceSettings, priceKeyInput: state.twelveDataApiKey, avKeyInput: state.alphaVantageApiKey }); },
+    savePriceKey: function () { update({ twelveDataApiKey: state.priceKeyInput.trim(), alphaVantageApiKey: state.avKeyInput.trim(), showPriceSettings: false }); },
 
     handleHoldingsImportFile: function (file) {
       if (!file) return;
@@ -825,7 +955,8 @@
         var idx = {
           portfolio: header.indexOf('portafoglio'), name: header.indexOf('nome'), ticker: header.indexOf('ticker'),
           type: header.indexOf('tipo'), qty: header.indexOf('quantita') > -1 ? header.indexOf('quantita') : header.indexOf('quantità'),
-          value: header.indexOf('valore'), change: header.indexOf('variazione')
+          value: header.indexOf('valore'), change: header.indexOf('variazione'),
+          invested: header.indexOf('investito') > -1 ? header.indexOf('investito') : header.indexOf('carico')
         };
         if (idx.name === -1 || idx.value === -1) throw new Error('Il file deve avere almeno le colonne "Nome" e "Valore".');
         var items = rows.slice(1).filter(function (r) { return r.length > 1 && r[idx.name]; }).map(function (r) {
@@ -838,6 +969,7 @@
             qty: idx.qty > -1 ? r[idx.qty].trim() : '',
             value: idx.value > -1 ? r[idx.value].trim() : '0',
             change: idx.change > -1 ? r[idx.change].trim() : '0',
+            invested: idx.invested > -1 && r[idx.invested] ? r[idx.invested].trim() : '',
             include: true
           };
         });
@@ -884,7 +1016,8 @@
         return {
           id: uid(), name: r.name, value: numVal(r.value) || 0, changePct: numVal(r.change) || 0,
           portfolioId: resolvePortfolio(r.portfolioName), ticker: r.ticker, assetType: r.assetType,
-          quantity: r.qty === '' ? null : (numVal(r.qty) || 0)
+          quantity: r.qty === '' ? null : (numVal(r.qty) || 0),
+          invested: !r.invested ? null : (numVal(r.invested) || 0)
         };
       });
 
@@ -903,8 +1036,12 @@
       }
       update({ priceRefreshBusy: true, priceRefreshStatus: '' });
 
+      var isEuSuffix = function (t) { return /\.[A-Z]{2,4}$/.test(t); };
       var cryptoHoldings = trackable.filter(function (h) { return h.assetType === 'crypto'; });
-      var stockHoldings = trackable.filter(function (h) { return h.assetType === 'stock'; });
+      var avHoldings = trackable.filter(function (h) { return h.assetType === 'stock' && isEuSuffix(h.ticker); });
+      var tdHoldings = trackable.filter(function (h) { return h.assetType === 'stock' && !isEuSuffix(h.ticker); });
+      var notes = [];
+      var failed = [];
 
       var cryptoPromise = Promise.resolve({});
       if (cryptoHoldings.length) {
@@ -917,49 +1054,105 @@
         cryptoPromise = fetch('https://api.coingecko.com/api/v3/simple/price?ids=' + encodeURIComponent(ids.join(',')) + '&vs_currencies=eur&include_24hr_change=true')
           .then(function (r) { if (!r.ok) throw new Error('CoinGecko: ' + r.status); return r.json(); })
           .then(function (data) {
-            var byTicker = {};
+            var byId = {};
             cryptoHoldings.forEach(function (h) {
               var id = CRYPTO_ID_MAP[h.ticker.toLowerCase()] || h.ticker.toLowerCase();
-              if (data[id]) byTicker[h.id] = { price: data[id].eur, changePct: data[id].eur_24h_change };
+              if (data[id]) byId[h.id] = { price: data[id].eur, changePct: data[id].eur_24h_change };
+              else failed.push(h.ticker);
             });
-            return byTicker;
-          }).catch(function () { return {}; });
+            return byId;
+          }).catch(function () { notes.push('CoinGecko non raggiungibile.'); return {}; });
       }
 
-      var stockPromise = Promise.resolve({});
-      if (stockHoldings.length) {
+      // Twelve Data: azioni/ETF USA (piano gratuito), con conversione in euro
+      var tdPromise = Promise.resolve({});
+      if (tdHoldings.length) {
         if (!state.twelveDataApiKey) {
-          stockPromise = Promise.resolve({ __missingKey: true });
+          notes.push('Per ' + tdHoldings.map(function (h) { return h.ticker; }).join(', ') + ' serve la chiave Twelve Data (o usa un ticker europeo, es. VWCE.DEX).');
         } else {
+          var key = state.twelveDataApiKey;
           var symbols = [];
           var symSeen = {};
-          stockHoldings.forEach(function (h) { if (!symSeen[h.ticker]) { symSeen[h.ticker] = true; symbols.push(h.ticker); } });
-          stockPromise = fetch('https://api.twelvedata.com/quote?symbol=' + encodeURIComponent(symbols.join(',')) + '&apikey=' + encodeURIComponent(state.twelveDataApiKey))
+          tdHoldings.forEach(function (h) { if (!symSeen[h.ticker]) { symSeen[h.ticker] = true; symbols.push(h.ticker); } });
+          tdPromise = fetch('https://api.twelvedata.com/quote?symbol=' + encodeURIComponent(symbols.join(',')) + '&apikey=' + encodeURIComponent(key))
             .then(function (r) { return r.json(); })
             .then(function (data) {
-              var byTicker = {};
-              stockHoldings.forEach(function (h) {
-                var q = symbols.length > 1 ? data[h.ticker] : data;
-                if (q && q.close && !q.code) byTicker[h.id] = { price: parseFloat(q.close), changePct: parseFloat(q.percent_change) };
+              var quotes = {};
+              symbols.forEach(function (sym) {
+                var q = symbols.length > 1 ? data[sym] : data;
+                if (q && q.close && !q.code) quotes[sym] = { price: parseFloat(q.close), changePct: parseFloat(q.percent_change), currency: (q.currency || 'USD').toUpperCase() };
               });
-              return byTicker;
-            }).catch(function () { return {}; });
+              var currencies = {};
+              Object.keys(quotes).forEach(function (sym) { if (quotes[sym].currency !== 'EUR') currencies[quotes[sym].currency] = true; });
+              var fxList = Object.keys(currencies);
+              return Promise.all(fxList.map(function (cur) {
+                return fetch('https://api.twelvedata.com/exchange_rate?symbol=' + encodeURIComponent(cur + '/EUR') + '&apikey=' + encodeURIComponent(key))
+                  .then(function (r) { return r.json(); })
+                  .then(function (fx) { return [cur, fx && fx.rate ? parseFloat(fx.rate) : NaN]; })
+                  .catch(function () { return [cur, NaN]; });
+              })).then(function (pairs) {
+                var rates = { EUR: 1 };
+                pairs.forEach(function (p) { rates[p[0]] = p[1]; });
+                var byId = {};
+                tdHoldings.forEach(function (h) {
+                  var q = quotes[h.ticker];
+                  if (!q) { failed.push(h.ticker); return; }
+                  var rate = rates[q.currency];
+                  if (isNaN(rate)) { failed.push(h.ticker + ' (cambio ' + q.currency + ')'); return; }
+                  byId[h.id] = { price: q.price * rate, changePct: q.changePct };
+                });
+                return byId;
+              });
+            }).catch(function () { notes.push('Twelve Data non raggiungibile.'); return {}; });
         }
       }
 
-      Promise.all([cryptoPromise, stockPromise]).then(function (results) {
-        var cryptoResults = results[0] || {};
-        var stockResults = results[1] || {};
-        var missingKey = !!stockResults.__missingKey;
+      // Alpha Vantage: ETF/azioni europee (es. VWCE.DEX). Una richiesta per ticker, in sequenza.
+      var avPromise = Promise.resolve({});
+      if (avHoldings.length) {
+        if (!state.alphaVantageApiKey) {
+          notes.push('Per ' + avHoldings.map(function (h) { return h.ticker; }).join(', ') + ' serve la chiave Alpha Vantage (Impostazioni prezzi).');
+        } else {
+          var avSymbols = [];
+          var avSeen = {};
+          avHoldings.forEach(function (h) { if (!avSeen[h.ticker]) { avSeen[h.ticker] = true; avSymbols.push(h.ticker); } });
+          var avQuotes = {};
+          var limited = false;
+          var wait = function (ms) { return new Promise(function (res) { setTimeout(res, ms); }); };
+          avPromise = avSymbols.reduce(function (chain, sym, i) {
+            return chain.then(function () {
+              if (limited) return null;
+              return (i > 0 ? wait(1200) : Promise.resolve()).then(function () {
+                return fetch('https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=' + encodeURIComponent(sym) + '&apikey=' + encodeURIComponent(state.alphaVantageApiKey));
+              }).then(function (r) { return r.json(); }).then(function (data) {
+                if (data && (data.Note || data.Information)) { limited = true; return; }
+                var q = data && data['Global Quote'];
+                var price = q ? parseFloat(q['05. price']) : NaN;
+                if (!isNaN(price)) avQuotes[sym] = { price: price, changePct: parseFloat(String(q['10. change percent'] || '').replace('%', '')) };
+              }).catch(function () {});
+            });
+          }, Promise.resolve()).then(function () {
+            if (limited) notes.push('Alpha Vantage: limite di richieste raggiunto (25 al giorno sul piano gratuito). Riprova domani.');
+            var byId = {};
+            avHoldings.forEach(function (h) { if (avQuotes[h.ticker]) byId[h.id] = avQuotes[h.ticker]; else if (!limited) failed.push(h.ticker); });
+            return byId;
+          });
+        }
+      }
+
+      Promise.all([cryptoPromise, tdPromise, avPromise]).then(function (results) {
+        var all = Object.assign({}, results[0] || {}, results[1] || {}, results[2] || {});
         var updatedCount = 0;
+        var today = isoFromDate(new Date());
         var portfolio = state.portfolio.map(function (h) {
-          var r = cryptoResults[h.id] || stockResults[h.id];
+          var r = all[h.id];
           if (!r || r.price == null || isNaN(r.price)) return h;
           updatedCount++;
-          return Object.assign({}, h, { value: r.price * h.quantity, changePct: isNaN(r.changePct) ? h.changePct : r.changePct });
+          return Object.assign({}, h, { value: round2(r.price * h.quantity), changePct: isNaN(r.changePct) ? h.changePct : r.changePct, priceUpdatedAt: today });
         });
         var status = updatedCount + ' posizion' + (updatedCount === 1 ? 'e aggiornata' : 'i aggiornate') + ' su ' + trackable.length + '.';
-        if (missingKey) status += ' Per le azioni/ETF serve una chiave Twelve Data (vedi "Impostazioni prezzi").';
+        if (failed.length) status += ' Prezzo non trovato per: ' + failed.join(', ') + ' (controlla il ticker).';
+        if (notes.length) status += ' ' + notes.join(' ');
         update({ portfolio: portfolio, priceRefreshBusy: false, priceRefreshStatus: status });
       });
     },
@@ -1024,7 +1217,7 @@
     },
     pickCatColor: function (color) { update({ newCatColor: color }); },
     pickCatIcon: function (icon) { update({ newCatIcon: icon }); },
-    toggleManageCategories: function () { update({ managingCategories: !state.managingCategories, showCreateCat: false, editingCatId: null }); },
+    toggleManageCategories: function () { update({ managingCategories: !state.managingCategories, showBudgets: false, showCreateCat: false, editingCatId: null }); },
     startEditCategory: function (id, type) {
       var key = type === 'income' ? 'incomeCategories' : 'expenseCategories';
       var cat = state[key].find(function (c) { return c.id == id; });
@@ -1035,6 +1228,16 @@
       var key = type === 'income' ? 'incomeCategories' : 'expenseCategories';
       var p = {}; p[key] = state[key].filter(function (c) { return c.id != id; });
       update(p);
+    },
+    toggleCategoryNeutral: function (id, type) {
+      var key = type === 'income' ? 'incomeCategories' : 'expenseCategories';
+      var p = {}; p[key] = state[key].map(function (c) { return c.id == id ? Object.assign({}, c, { neutral: !c.neutral }) : c; });
+      update(p);
+    },
+    setCategoryBudget: function (id, raw) {
+      var v = String(raw || '').trim() === '' ? 0 : numVal(raw);
+      if (isNaN(v) || v < 0) v = 0;
+      update({ expenseCategories: state.expenseCategories.map(function (c) { return c.id == id ? Object.assign({}, c, { budget: round2(v) }) : c; }) });
     },
     startMergeCategory: function (id, type) { update({ mergingCatId: id, mergingCatType: type, mergeTargetId: '' }); },
     cancelMergeCategory: function () { update({ mergingCatId: null, mergingCatType: null, mergeTargetId: '' }); },
@@ -1068,9 +1271,11 @@
 
     exportCSV: function () {
       try {
-        var rows = [['Data', 'Categoria', 'Tipo', 'Importo', 'Nota']];
+        var rows = [['Data', 'Categoria', 'Tipo', 'Importo', 'Nota', 'Conto', 'Fuori dai totali']];
+        var isNeutral = neutralChecker(state);
         state.transactions.slice().sort(function (a, b) { return new Date(a.date) - new Date(b.date); }).forEach(function (t) {
-          rows.push([t.date, t.category, t.type, String(t.amount).replace('.', ','), t.note || '']);
+          var acc = t.accountId ? state.accounts.find(function (a) { return a.id === t.accountId; }) : null;
+          rows.push([t.date, t.category, t.type, String(t.amount).replace('.', ','), t.note || '', acc ? acc.name : '', isNeutral(t) ? 'si' : '']);
         });
         var csv = rows.map(function (r) { return r.map(function (cell) { return '"' + String(cell).replace(/"/g, '""') + '"'; }).join(';'); }).join('\r\n');
         var blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
@@ -1086,15 +1291,18 @@
     exportBackup: function () {
       try {
         var data = {};
-        PERSIST_KEYS.forEach(function (k) { data[k] = state[k]; });
-        var payload = { app: 'le-mie-finanze', version: 1, exportedAt: new Date().toISOString(), data: data };
+        PERSIST_KEYS.forEach(function (k) { if (SECRET_KEYS.indexOf(k) === -1) data[k] = state[k]; });
+        var nowIso = new Date().toISOString();
+        data.lastBackupAt = nowIso;
+        var payload = { app: 'le-mie-finanze', version: 2, exportedAt: nowIso, data: data };
         var blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
         var url = URL.createObjectURL(blob);
         var a = document.createElement('a');
         var d = new Date();
         a.href = url; a.download = 'le-mie-finanze-backup-' + d.toISOString().slice(0, 10) + '.json';
         document.body.appendChild(a); a.click(); document.body.removeChild(a);
-        URL.revokeObjectURL(url);
+        setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+        update({ lastBackupAt: nowIso });
       } catch (e) {}
     },
     handleBackupFile: function (file) {
@@ -1121,10 +1329,16 @@
     confirmRestoreBackup: function () {
       if (!state.backupPreview) return;
       var data = state.backupPreview.data;
+      var keepSecrets = {};
+      SECRET_KEYS.forEach(function (k) { keepSecrets[k] = state[k]; });
       var fresh = defaultState();
       Object.keys(state).forEach(function (k) { delete state[k]; });
       Object.assign(state, fresh);
       PERSIST_KEYS.forEach(function (k) { if (data[k] !== undefined) state[k] = data[k]; });
+      if (data.dataVersion === undefined) state.dataVersion = 1;
+      // le chiavi API del telefono restano quelle attuali, a meno che il backup (vecchio formato) ne contenga una
+      SECRET_KEYS.forEach(function (k) { if (!state[k]) state[k] = keepSecrets[k] || ''; });
+      migrate();
       state.backupPreview = null;
       save();
       render();
@@ -1170,6 +1384,7 @@
           update({ importBusy: false, importError: msg });
           return;
         }
+        markImportDuplicates(items, state.transactions, state.transferLog);
         update({ importBusy: false, importRows: items });
       }).catch(function (err) {
         update({ importBusy: false, importError: 'Errore durante la lettura del file: ' + (err && err.message ? err.message : err) });
@@ -1225,6 +1440,7 @@
         var found = list.find(function (c) { return c.name.toLowerCase() === name.toLowerCase(); });
         if (found) return found.name;
         var cat = { id: uid(), name: name, color: CATEGORY_PALETTE[list.length % CATEGORY_PALETTE.length], icon: '' };
+        if (isNeutralDefaultName(name, type)) cat.neutral = true;
         list.push(cat);
         return cat.name;
       }
@@ -1233,6 +1449,7 @@
       var balanceDelta = {};
       var skippedTransfers = 0;
       var appliedTransfers = 0;
+      var transferLog = (state.transferLog || []).slice();
 
       included.forEach(function (r) {
         if (r.kind === 'transfer') {
@@ -1242,6 +1459,7 @@
           if (!fromId || !toId || fromId === toId || tamt <= 0) { skippedTransfers++; return; }
           balanceDelta[fromId] = (balanceDelta[fromId] || 0) - tamt;
           balanceDelta[toId] = (balanceDelta[toId] || 0) + tamt;
+          transferLog.push(transferKey(r));
           appliedTransfers++;
           return;
         }
@@ -1259,8 +1477,11 @@
       var summary = newTx.length + ' movimenti importati';
       if (appliedTransfers > 0) summary += ', ' + appliedTransfers + ' giroconti applicati';
       if (skippedTransfers > 0) summary += ' (' + skippedTransfers + ' giroconti saltati per conto mancante)';
+      var skippedDup = state.importRows.filter(function (r) { return r.dup && !r.include; }).length;
+      if (skippedDup > 0) summary += '. ' + skippedDup + ' doppioni non importati';
 
       update({
+        transferLog: transferLog.slice(-2000),
         accounts: accounts,
         expenseCategories: expenseCategories,
         incomeCategories: incomeCategories,
@@ -1272,15 +1493,23 @@
   window.App = App;
 
   // ---------- render ----------
+  // Restituisce una funzione che dice se un movimento è "neutro" (giroconto, compravendita titoli).
+  function neutralChecker(s) {
+    var set = {};
+    s.expenseCategories.forEach(function (c) { if (c.neutral) set['uscita|' + c.name] = true; });
+    s.incomeCategories.forEach(function (c) { if (c.neutral) set['entrata|' + c.name] = true; });
+    return function (t) { return !!set[t.type + '|' + t.category]; };
+  }
+  function sumAmount(list) { return list.reduce(function (sum, t) { return sum + Number(t.amount || 0); }, 0); }
+
   function render() {
     var s = state;
 
-    var totalAccounts = s.accounts.filter(function (a) { return !a.excludeFromTotal; }).reduce(function (sum, a) { return sum + Number(a.balance || 0); }, 0);
-    var totalPortfolio = s.portfolio.reduce(function (sum, h) { return sum + Number(h.value || 0); }, 0);
-    var totalDebt = s.debts.filter(function (d) { return d.kind === 'devo'; }).reduce(function (sum, d) { return sum + Number(d.amount || 0); }, 0);
-    var totalCredit = s.debts.filter(function (d) { return d.kind === 'mi deve'; }).reduce(function (sum, d) { return sum + Number(d.amount || 0); }, 0);
-    var netWorth = totalAccounts + totalPortfolio + totalCredit - totalDebt;
+    var totals = computeTotals(s);
+    var totalAccounts = totals.acc, totalPortfolio = totals.port, totalDebt = totals.debt, totalCredit = totals.cred;
+    var netWorth = totals.nw;
     var goalPct = s.goal.target > 0 ? Math.min(100, (s.goal.current / s.goal.target) * 100) : 0;
+    var isNeutral = neutralChecker(s);
 
     var now = new Date();
     var startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -1293,14 +1522,18 @@
     var rangeStart = s.period === 'custom' ? (s.customFrom ? new Date(s.customFrom) : new Date(2000, 0, 1)) : (ranges[s.period] || ranges.mese);
     var rangeEnd = s.period === 'custom' && s.customTo ? new Date(s.customTo + 'T23:59:59') : new Date(now.getTime() + 86400000);
 
-    var monthTx = s.transactions.filter(function (t) { return new Date(t.date) >= ranges.mese; });
-    var monthlyIncome = monthTx.filter(function (t) { return t.type === 'entrata'; }).reduce(function (sum, t) { return sum + Number(t.amount || 0); }, 0);
-    var monthlyExpense = monthTx.filter(function (t) { return t.type === 'uscita'; }).reduce(function (sum, t) { return sum + Number(t.amount || 0); }, 0);
+    var curMonth = monthKey(now);
+    var monthTx = s.transactions.filter(function (t) { return String(t.date).slice(0, 7) === curMonth && !isNeutral(t); });
+    var monthlyIncome = sumAmount(monthTx.filter(function (t) { return t.type === 'entrata'; }));
+    var monthlyExpense = sumAmount(monthTx.filter(function (t) { return t.type === 'uscita'; }));
 
     var periodTx = s.transactions.filter(function (t) { var d = new Date(t.date); return d >= rangeStart && d <= rangeEnd; });
-    var periodIncome = periodTx.filter(function (t) { return t.type === 'entrata'; }).reduce(function (sum, t) { return sum + Number(t.amount || 0); }, 0);
-    var periodExpense = periodTx.filter(function (t) { return t.type === 'uscita'; }).reduce(function (sum, t) { return sum + Number(t.amount || 0); }, 0);
+    var periodReal = periodTx.filter(function (t) { return !isNeutral(t); });
+    var periodNeutral = periodTx.filter(isNeutral);
+    var periodIncome = sumAmount(periodReal.filter(function (t) { return t.type === 'entrata'; }));
+    var periodExpense = sumAmount(periodReal.filter(function (t) { return t.type === 'uscita'; }));
     var periodNet = periodIncome - periodExpense;
+    var periodMoved = sumAmount(periodNeutral.filter(function (t) { return t.type === 'uscita'; })) - sumAmount(periodNeutral.filter(function (t) { return t.type === 'entrata'; }));
     var maxBar = Math.max(periodIncome, periodExpense, 1);
 
     var urgentDays = s.upcoming.map(function (u) {
@@ -1312,14 +1545,18 @@
 
     var html = '';
     html += '<div class="page"><div class="wrap">';
+    html += renderUpdateBanner(s);
     html += renderHeader(s, netWorth, totalAccounts, totalPortfolio, totalDebt, totalCredit, urgent.length, urgentTotal, goalPct);
-    html += renderInsights(s, totalAccounts, totalDebt, monthlyIncome, monthlyExpense);
-    html += renderTxSection(s, periodTx, periodIncome, periodExpense, periodNet, maxBar);
+    html += renderBackupReminder(s);
+    html += renderInsights(s, totalAccounts, totalDebt, monthlyIncome, monthlyExpense, isNeutral);
+    html += renderTxSection(s, periodTx, periodIncome, periodExpense, periodNet, maxBar, isNeutral, periodMoved);
+    html += renderMonthly(s, isNeutral);
+    html += renderNetWorthHistory(s);
     html += renderAccounts(s);
     html += renderDebts(s);
     html += renderUpcoming(s, urgentDays, startOfDay);
     html += renderPortfolios(s, totalPortfolio);
-    html += '<div style="text-align:center;font-size:12px;color:#A6A39B;padding-top:8px;">I dati vengono salvati sul tuo dispositivo (localStorage), non lasciano il telefono.</div>';
+    html += '<div style="text-align:center;font-size:12px;color:#A6A39B;padding-top:8px;">I dati vengono salvati sul tuo dispositivo (localStorage), non lasciano il telefono. &middot; v' + APP_VERSION + '</div>';
     html += renderBackupPanel(s);
     html += renderResetPanel(s);
     html += '</div></div>';
@@ -1327,10 +1564,29 @@
     document.getElementById('app').innerHTML = html;
   }
 
+  function daysSince(iso) { return iso ? Math.floor((Date.now() - new Date(iso).getTime()) / 86400000) : null; }
+  function renderBackupReminder(s) {
+    var hasData = s.transactions.length || s.accounts.length || s.portfolio.length;
+    if (!hasData) return '';
+    var days = daysSince(s.lastBackupAt);
+    if (days !== null && days < BACKUP_REMINDER_DAYS) return '';
+    var msg = days === null ? 'Non hai ancora fatto un backup: i dati esistono solo su questo telefono.' : 'L\'ultimo backup è di ' + days + ' giorni fa.';
+    return '<div class="card" style="flex-direction:row;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;padding:14px 16px;border-color:rgba(176,137,0,0.4);background:#FFFBEF;">' +
+      '<div style="font-size:13px;"><strong>Backup</strong> &middot; ' + msg + '</div>' +
+      '<button class="btn btn-dark" data-action="export-backup">Esporta ora</button></div>';
+  }
+  function renderUpdateBanner(s) {
+    if (!s.updateReady) return '';
+    return '<div class="card" style="flex-direction:row;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;padding:12px 16px;">' +
+      '<div style="font-size:13px;">È disponibile una nuova versione dell\'app.</div>' +
+      '<button class="btn btn-primary" data-action="reload-app">Aggiorna</button></div>';
+  }
+
   function renderBackupPanel(s) {
     var html = '<div class="card">' +
       '<div class="section-title">Backup</div>' +
-      '<div class="muted" style="font-size:12px;">Esporta un file con tutti i tuoi dati (conti, movimenti, debiti, pagamenti, portafogli, categorie) per non perderli se cambi telefono o cancelli i dati del browser.</div>' +
+      '<div class="muted" style="font-size:12px;">Esporta un file con tutti i tuoi dati (conti, movimenti, debiti, pagamenti, portafogli, categorie, storico) per non perderli se cambi telefono o cancelli i dati del browser. Le chiavi API non vengono incluse. Il file contiene i tuoi dati finanziari: tienilo in un posto privato.</div>' +
+      '<div style="font-size:12px;">Ultimo backup: <strong>' + (s.lastBackupAt ? fmtDate(s.lastBackupAt) : 'mai') + '</strong></div>' +
       '<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;">' +
       '<button class="btn btn-primary" data-action="export-backup">Esporta backup (.json)</button>' +
       '<label class="btn btn-ghost" style="cursor:pointer;">Importa backup<input type="file" accept=".json" data-action="import-backup-file" style="display:none;"></label>' +
@@ -1435,7 +1691,16 @@
       '</div>';
   }
 
-  function renderInsights(s, totalAccounts, totalDebt, monthlyIncome, monthlyExpense) {
+  function monthExpenseByCategory(s, key, isNeutral) {
+    var by = {};
+    s.transactions.forEach(function (t) {
+      if (t.type !== 'uscita' || String(t.date).slice(0, 7) !== key || isNeutral(t)) return;
+      by[t.category] = (by[t.category] || 0) + Number(t.amount || 0);
+    });
+    return by;
+  }
+
+  function renderInsights(s, totalAccounts, totalDebt, monthlyIncome, monthlyExpense, isNeutral) {
     var cards = [];
     if (monthlyExpense > 0) {
       var months = totalAccounts / monthlyExpense;
@@ -1448,7 +1713,7 @@
     if (monthlyIncome > 0) {
       var rate = (monthlyIncome - monthlyExpense) / monthlyIncome * 100;
       if (rate < 0) cards.push(insightCard('Tasso di risparmio (mese)', rate.toFixed(0) + '%', 'Attenzione', NEGATIVE, 'rgba(179,65,58,0.1)', 'Questo mese le uscite superano le entrate: rivedi le voci di spesa più alte.'));
-      else if (rate >= 20) cards.push(insightCard('Tasso di risparmio (mese)', rate.toFixed(0) + '%', 'Ottimo', ACCENT, 'rgba(31,111,92,0.1)', 'Un tasso di risparmio del 20% o più è un ottimo punto di partenza per investire con regolarità.'));
+      else if (rate >= 20) cards.push(insightCard('Tasso di risparmio (mese)', rate.toFixed(0) + '%', 'Ottimo', ACCENT, 'rgba(31,111,92,0.1)', 'Un tasso di risparmio del 20% o più è un ottimo punto di partenza per investire con regolarità. Gli acquisti di titoli contano come risparmio, non come spesa.'));
       else if (rate >= 10) cards.push(insightCard('Tasso di risparmio (mese)', rate.toFixed(0) + '%', 'Buono', WARN, 'rgba(176,137,0,0.1)', 'Sei sulla buona strada: prova ad avvicinarti al 20% di risparmio sul reddito.'));
       else cards.push(insightCard('Tasso di risparmio (mese)', rate.toFixed(0) + '%', 'Basso', NEGATIVE, 'rgba(179,65,58,0.1)', '"Prima paga te stesso": prova a mettere da parte una quota fissa appena arriva lo stipendio.'));
     } else {
@@ -1458,10 +1723,20 @@
     else if (totalDebt > totalAccounts) cards.push(insightCard('Debiti', fmt(totalDebt), 'Priorità', NEGATIVE, 'rgba(179,65,58,0.1)', 'I debiti superano la liquidità disponibile: prima di investire, valuta di saldarli, specie se a tasso alto.'));
     else cards.push(insightCard('Debiti', fmt(totalDebt), 'Da monitorare', WARN, 'rgba(176,137,0,0.1)', 'Hai debiti aperti: un debito "cattivo" (tasso alto, beni che si svalutano) va saldato prima di investire.'));
 
+    var budgeted = s.expenseCategories.filter(function (c) { return Number(c.budget) > 0; });
+    if (budgeted.length) {
+      var spentNow = monthExpenseByCategory(s, monthKey(), isNeutral);
+      var over = budgeted.filter(function (c) { return (spentNow[c.name] || 0) > Number(c.budget); });
+      var near = budgeted.filter(function (c) { var v = spentNow[c.name] || 0; return v <= Number(c.budget) && v >= Number(c.budget) * 0.8; });
+      if (over.length) cards.push(insightCard('Budget del mese', over.length + ' su ' + budgeted.length + ' sforati', 'Attenzione', NEGATIVE, 'rgba(179,65,58,0.1)', 'Sforati: ' + over.map(function (c) { return esc(c.name); }).join(', ') + '. Dettaglio in "Mese per mese".'));
+      else if (near.length) cards.push(insightCard('Budget del mese', near.length + ' vicini al limite', 'Da monitorare', WARN, 'rgba(176,137,0,0.1)', 'Oltre l\'80%: ' + near.map(function (c) { return esc(c.name); }).join(', ') + '.'));
+      else cards.push(insightCard('Budget del mese', 'Tutto nei limiti', 'Ottimo', ACCENT, 'rgba(31,111,92,0.1)', budgeted.length + (budgeted.length === 1 ? ' categoria' : ' categorie') + ' con budget, nessuna sforata.'));
+    }
+
     return '<div class="card"><div><div class="section-title">Salute finanziaria</div><div class="muted" style="font-size:13px;margin-top:4px;">Indicatori di base, calcolati sui tuoi dati del mese in corso.</div></div><div class="grid-fit">' + cards.join('') + '</div></div>';
   }
 
-  function renderTxSection(s, periodTx, periodIncome, periodExpense, periodNet, maxBar) {
+  function renderTxSection(s, periodTx, periodIncome, periodExpense, periodNet, maxBar, isNeutral, periodMoved) {
     var periodDefs = [{ key: 'giorno', label: 'Giorno' }, { key: 'settimana', label: 'Settimana' }, { key: 'mese', label: 'Mese' }, { key: 'anno', label: 'Anno' }, { key: 'custom', label: 'Intervallo' }];
     var periodBtns = periodDefs.map(function (p) {
       var active = s.period === p.key;
@@ -1473,7 +1748,7 @@
       : '';
 
     var expenseByCat = {};
-    periodTx.filter(function (t) { return t.type === 'uscita'; }).forEach(function (t) { expenseByCat[t.category] = (expenseByCat[t.category] || 0) + Number(t.amount || 0); });
+    periodTx.filter(function (t) { return t.type === 'uscita' && !isNeutral(t); }).forEach(function (t) { expenseByCat[t.category] = (expenseByCat[t.category] || 0) + Number(t.amount || 0); });
     var maxCatVal = 1;
     Object.keys(expenseByCat).forEach(function (k) { if (expenseByCat[k] > maxCatVal) maxCatVal = expenseByCat[k]; });
     var topCats = Object.keys(expenseByCat).map(function (name) { return [name, expenseByCat[name]]; }).sort(function (a, b) { return b[1] - a[1]; }).slice(0, 6);
@@ -1516,10 +1791,11 @@
           '</div>';
       }
       var meta = catMeta(s.expenseCategories.concat(s.incomeCategories), t.category);
+      var neutral = isNeutral(t);
       var amountFmt = (t.type === 'entrata' ? '+' : '-') + fmt(t.amount);
-      var color = t.type === 'entrata' ? ACCENT : NEGATIVE;
+      var color = neutral ? '#6B6862' : (t.type === 'entrata' ? ACCENT : NEGATIVE);
       var acc = t.accountId ? s.accounts.find(function (a) { return a.id === t.accountId; }) : null;
-      var subtitle = fmtDate(t.date) + (acc ? ' &middot; ' + esc(acc.name) : '') + ' &middot; ' + esc(t.note || '—');
+      var subtitle = fmtDate(t.date) + (acc ? ' &middot; ' + esc(acc.name) : '') + ' &middot; ' + esc(t.note || '—') + (neutral ? ' &middot; <span title="Giroconto o compravendita titoli: aggiorna il saldo ma non conta come spesa o entrata">fuori dai totali</span>' : '');
       return '<div class="list-row"><button data-action="start-edit-tx" data-id="' + t.id + '" style="background:none;border:none;cursor:pointer;padding:0;text-align:left;display:flex;align-items:center;gap:10px;">' + avatarHtml(meta, 30) +
         '<div><div style="font-size:14px;font-weight:500;color:#1E1D1B;">' + esc(t.category) + '</div><div class="muted" style="font-size:12px;">' + subtitle + '</div></div></button>' +
         '<div style="display:flex;align-items:center;gap:12px;"><div style="font-size:14px;font-weight:600;color:' + color + ';">' + amountFmt + '</div>' +
@@ -1562,7 +1838,7 @@
 
     return '<div class="card">' +
       '<div class="row" style="flex-wrap:wrap;"><div class="section-title">Entrate e uscite</div>' +
-      '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;"><div style="display:flex;gap:4px;background:#F6F5F2;padding:4px;border-radius:10px;">' + periodBtns + '</div>' +
+      '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;max-width:100%;"><div style="display:flex;gap:4px;background:#F6F5F2;padding:4px;border-radius:10px;max-width:100%;overflow-x:auto;">' + periodBtns + '</div>' +
       '<button class="btn btn-ghost" data-action="toggle" data-field="showImport">Importa</button><button class="btn btn-ghost" data-action="export-csv">Esporta CSV</button><button class="btn btn-ghost" data-action="print-page">Stampa / PDF</button></div></div>' +
       renderImportPanel(s) +
       customRange +
@@ -1570,6 +1846,7 @@
       '<div style="background:#F6F5F2;border-radius:12px;padding:14px 16px;"><div class="muted" style="font-size:12px;">Entrate</div><div style="font-size:19px;font-weight:600;color:' + ACCENT + ';margin-top:4px;">' + fmt(periodIncome) + '</div></div>' +
       '<div style="background:#F6F5F2;border-radius:12px;padding:14px 16px;"><div class="muted" style="font-size:12px;">Uscite</div><div style="font-size:19px;font-weight:600;color:' + NEGATIVE + ';margin-top:4px;">' + fmt(periodExpense) + '</div></div>' +
       '<div style="background:#F6F5F2;border-radius:12px;padding:14px 16px;"><div class="muted" style="font-size:12px;">Netto</div><div style="font-size:19px;font-weight:600;margin-top:4px;color:' + (periodNet >= 0 ? ACCENT : NEGATIVE) + ';">' + (periodNet >= 0 ? '+' : '') + fmt(periodNet) + '</div></div>' +
+      (Math.abs(periodMoved) >= 0.005 ? '<div style="background:#F6F5F2;border-radius:12px;padding:14px 16px;" title="Giroconti e acquisti/vendite di titoli: non sono spese, quindi restano fuori da entrate e uscite"><div class="muted" style="font-size:12px;">' + (periodMoved >= 0 ? 'Investito / spostato' : 'Rientrato da investimenti') + '</div><div style="font-size:19px;font-weight:600;margin-top:4px;color:#1E1D1B;">' + fmt(Math.abs(periodMoved)) + '</div></div>' : '') +
       '</div>' +
       '<div style="display:flex;flex-direction:column;gap:8px;">' +
       '<div style="display:flex;align-items:center;gap:10px;"><span style="width:56px;font-size:12px;color:#6B6862;">Entrate</span><div class="bar-track"><div class="bar-fill" style="background:' + ACCENT + ';width:' + (periodIncome / maxBar * 100) + '%;"></div></div></div>' +
@@ -1580,6 +1857,228 @@
       '<div style="display:flex;flex-direction:column;gap:2px;border-top:1px solid #E4E2DC;padding-top:10px;">' + (txList || '<div class="muted" style="font-size:13px;padding:10px 4px;">Nessun movimento in questo periodo.</div>') + '</div>' +
       '<div><button class="btn btn-primary" data-action="toggle" data-field="showAddTx">+ Aggiungi movimento</button>' + addTxForm + '</div>' +
       '</div>';
+  }
+
+  // ---------- mese per mese ----------
+  function lastMonthKeys(n) {
+    var now = new Date(), keys = [];
+    for (var i = n - 1; i >= 0; i--) keys.push(monthKey(new Date(now.getFullYear(), now.getMonth() - i, 1)));
+    return keys;
+  }
+  function prevMonthKey(key) {
+    var y = parseInt(key.slice(0, 4), 10), m = parseInt(key.slice(5, 7), 10);
+    return monthKey(new Date(y, m - 2, 1));
+  }
+  function monthLabel(key, long) {
+    var d = new Date(parseInt(key.slice(0, 4), 10), parseInt(key.slice(5, 7), 10) - 1, 1);
+    return long ? d.toLocaleDateString('it-IT', { month: 'long', year: 'numeric' }) : d.toLocaleDateString('it-IT', { month: 'short' }).replace('.', '');
+  }
+  function fmtCompact(n) {
+    var a = Math.abs(n);
+    if (a >= 1000) return (n / 1000).toLocaleString('it-IT', { maximumFractionDigits: a >= 10000 ? 0 : 1 }) + 'k';
+    return Math.round(n).toLocaleString('it-IT');
+  }
+  // Barra con angoli arrotondati solo in cima (appoggiata alla linea di base).
+  function barPath(x, y, w, h, r) {
+    if (h <= 0) return '';
+    r = Math.min(r, w / 2, h);
+    return 'M' + x + ',' + (y + h) + 'V' + (y + r) + 'Q' + x + ',' + y + ' ' + (x + r) + ',' + y + 'H' + (x + w - r) + 'Q' + (x + w) + ',' + y + ' ' + (x + w) + ',' + (y + r) + 'V' + (y + h) + 'Z';
+  }
+  function niceMax(v) {
+    if (v <= 0) return 100;
+    var p = Math.pow(10, Math.floor(Math.log(v) / Math.LN10));
+    var steps = [1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10];
+    for (var i = 0; i < steps.length; i++) if (steps[i] * p >= v) return steps[i] * p;
+    return 10 * p;
+  }
+
+  function renderMonthly(s, isNeutral) {
+    var keys = lastMonthKeys(12);
+    var byMonth = {};
+    keys.forEach(function (k) { byMonth[k] = { inc: 0, exp: 0 }; });
+    var hasAny = false;
+    s.transactions.forEach(function (t) {
+      var k = String(t.date).slice(0, 7);
+      if (!byMonth[k] || isNeutral(t)) return;
+      hasAny = true;
+      if (t.type === 'entrata') byMonth[k].inc += Number(t.amount || 0); else byMonth[k].exp += Number(t.amount || 0);
+    });
+    var sel = keys.indexOf(s.monthViewKey) > -1 ? s.monthViewKey : keys[keys.length - 1];
+    var prev = prevMonthKey(sel);
+
+    var head = '<div class="row" style="flex-wrap:wrap;"><div class="section-title">Mese per mese</div>' +
+      '<div style="display:flex;gap:14px;font-size:12px;color:#6B6862;align-items:center;">' +
+      '<span style="display:flex;align-items:center;gap:6px;"><span style="width:10px;height:10px;border-radius:3px;background:' + ACCENT + ';"></span>Entrate</span>' +
+      '<span style="display:flex;align-items:center;gap:6px;"><span style="width:10px;height:10px;border-radius:3px;background:' + NEGATIVE + ';"></span>Uscite</span></div></div>';
+
+    if (!hasAny) {
+      return '<div class="card">' + head + '<div class="muted" style="font-size:13px;">Quando avrai movimenti in più mesi, qui vedrai l\'andamento degli ultimi 12 mesi e il confronto tra categorie.</div></div>';
+    }
+
+    // grafico a barre: entrate e uscite affiancate per ogni mese
+    var W = 360, H = 180, padL = 34, padR = 4, padT = 8, padB = 22;
+    var plotW = W - padL - padR, plotH = H - padT - padB;
+    var max = 0;
+    keys.forEach(function (k) { max = Math.max(max, byMonth[k].inc, byMonth[k].exp); });
+    max = niceMax(max);
+    var y = function (v) { return padT + plotH - (v / max) * plotH; };
+    var groupW = plotW / keys.length;
+    var barW = Math.max(5, Math.min(14, groupW / 2 - 3));
+    var svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" width="100%" role="img" aria-label="Entrate e uscite degli ultimi 12 mesi" style="display:block;font-family:\'Public Sans\',sans-serif;">';
+    [0, 0.5, 1].forEach(function (f) {
+      var gy = y(max * f);
+      svg += '<line x1="' + padL + '" x2="' + (W - padR) + '" y1="' + gy + '" y2="' + gy + '" stroke="#E4E2DC" stroke-width="1"' + (f === 0 ? '' : ' stroke-dasharray="3 4"') + '/>';
+      svg += '<text x="' + (padL - 6) + '" y="' + (gy + 4) + '" text-anchor="end" font-size="11" fill="#6B6862">' + fmtCompact(max * f) + '</text>';
+    });
+    keys.forEach(function (k, i) {
+      var gx = padL + i * groupW;
+      var cx = gx + groupW / 2;
+      var d = byMonth[k];
+      var isSel = k === sel;
+      if (isSel) svg += '<rect x="' + (gx + 1) + '" y="' + padT + '" width="' + (groupW - 2) + '" height="' + plotH + '" rx="6" fill="#F0EFEA"/>';
+      svg += '<path d="' + barPath(cx - barW - 1, y(d.inc), barW, padT + plotH - y(d.inc), 4) + '" fill="' + ACCENT + '"/>';
+      svg += '<path d="' + barPath(cx + 1, y(d.exp), barW, padT + plotH - y(d.exp), 4) + '" fill="' + NEGATIVE + '"/>';
+      svg += '<text x="' + cx + '" y="' + (H - 8) + '" text-anchor="middle" font-size="11" fill="' + (isSel ? '#1E1D1B' : '#6B6862') + '" font-weight="' + (isSel ? '700' : '400') + '">' + monthLabel(k) + '</text>';
+      // area cliccabile più grande della barra, con tooltip nativo
+      svg += '<rect data-action="pick-month" data-key="' + k + '" x="' + gx + '" y="0" width="' + groupW + '" height="' + H + '" fill="transparent" style="cursor:pointer;"><title>' + monthLabel(k, true) + ' — Entrate ' + fmt(d.inc) + ' · Uscite ' + fmt(d.exp) + ' · Netto ' + fmt(d.inc - d.exp) + '</title></rect>';
+    });
+    svg += '</svg>';
+
+    // dettaglio del mese selezionato
+    var cur = byMonth[sel] || { inc: 0, exp: 0 };
+    var prevData = byMonth[prev];
+    if (!prevData) {
+      prevData = { inc: 0, exp: 0 };
+      s.transactions.forEach(function (t) { if (String(t.date).slice(0, 7) === prev && !isNeutral(t)) { if (t.type === 'entrata') prevData.inc += Number(t.amount || 0); else prevData.exp += Number(t.amount || 0); } });
+    }
+    var net = cur.inc - cur.exp;
+    var rate = cur.inc > 0 ? Math.round(net / cur.inc * 100) : null;
+    var expDelta = cur.exp - prevData.exp;
+    var tile = function (label, value, color, sub) {
+      return '<div style="background:#F6F5F2;border-radius:12px;padding:12px 14px;"><div class="muted" style="font-size:12px;">' + label + '</div><div style="font-size:17px;font-weight:600;margin-top:4px;color:' + (color || '#1E1D1B') + ';">' + value + '</div>' + (sub ? '<div class="muted" style="font-size:11px;margin-top:2px;">' + sub + '</div>' : '') + '</div>';
+    };
+    var tiles = '<div class="grid-fit" style="grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;">' +
+      tile('Entrate', fmt(cur.inc), ACCENT) +
+      tile('Uscite', fmt(cur.exp), NEGATIVE, prevData.exp > 0 ? (expDelta >= 0 ? '+' : '−') + fmt(Math.abs(expDelta)) + ' vs ' + monthLabel(prev) : '') +
+      tile('Netto', (net >= 0 ? '+' : '') + fmt(net), net >= 0 ? ACCENT : NEGATIVE) +
+      tile('Risparmio', rate === null ? '—' : rate + '%', null, 'sulle entrate del mese') +
+      '</div>';
+
+    var curCats = monthExpenseByCategory(s, sel, isNeutral);
+    var prevCats = monthExpenseByCategory(s, prev, isNeutral);
+    var names = {};
+    Object.keys(curCats).forEach(function (n) { names[n] = true; });
+    Object.keys(prevCats).forEach(function (n) { names[n] = true; });
+    s.expenseCategories.forEach(function (c) { if (Number(c.budget) > 0) names[c.name] = true; });
+    var allCats = s.expenseCategories.concat(s.incomeCategories);
+    var rows = Object.keys(names).map(function (n) { return { name: n, cur: curCats[n] || 0, prev: prevCats[n] || 0 }; })
+      .sort(function (a, b) { return b.cur - a.cur || b.prev - a.prev; })
+      .map(function (r) {
+        var meta = catMeta(allCats, r.name);
+        var catObj = s.expenseCategories.find(function (c) { return c.name === r.name; });
+        var budget = catObj ? Number(catObj.budget) || 0 : 0;
+        var diff = r.cur - r.prev;
+        var diffHtml = '';
+        if (r.prev > 0 || r.cur > 0) {
+          if (Math.abs(diff) < 0.005) diffHtml = '<span class="muted">= ' + monthLabel(prev) + '</span>';
+          else diffHtml = '<span style="color:' + (diff > 0 ? NEGATIVE : ACCENT) + ';">' + (diff > 0 ? '▲ +' : '▼ −') + fmt(Math.abs(diff)) + '</span> <span class="muted">vs ' + monthLabel(prev) + '</span>';
+        }
+        var budgetHtml = '';
+        if (budget > 0) {
+          var pct = r.cur / budget;
+          var bc = pct > 1 ? NEGATIVE : (pct >= 0.8 ? WARN : ACCENT);
+          budgetHtml = '<div style="display:flex;align-items:center;gap:8px;margin-top:6px;"><div class="bar-track" style="height:6px;"><div class="bar-fill" style="background:' + bc + ';width:' + Math.min(100, pct * 100) + '%;"></div></div>' +
+            '<span style="font-size:11px;white-space:nowrap;color:' + (pct > 1 ? NEGATIVE : '#6B6862') + ';">' + (pct > 1 ? 'Sforato: ' : '') + fmt(r.cur) + ' di ' + fmt(budget) + '</span></div>';
+        }
+        return '<div style="padding:9px 2px;border-bottom:1px solid #F0EFEA;"><div style="display:flex;align-items:center;gap:10px;">' + avatarHtml(meta, 26) +
+          '<div style="flex:1;min-width:0;"><div style="display:flex;justify-content:space-between;gap:8px;"><span style="font-size:13px;font-weight:500;">' + esc(r.name) + '</span><span style="font-size:13px;font-weight:600;">' + fmt(r.cur) + '</span></div>' +
+          '<div style="font-size:11px;margin-top:2px;">' + diffHtml + '</div>' + budgetHtml + '</div></div></div>';
+      }).join('');
+
+    return '<div class="card">' + head +
+      '<div class="muted" style="font-size:12px;margin-top:-8px;">Tocca un mese per vederne il dettaglio. Giroconti e acquisti di titoli sono esclusi.</div>' +
+      svg +
+      '<div style="font-size:14px;font-weight:600;text-transform:capitalize;">' + monthLabel(sel, true) + '</div>' +
+      tiles +
+      '<div><div style="font-size:13px;font-weight:600;color:#6B6862;margin-bottom:4px;">Uscite per categoria</div>' + (rows || '<div class="muted" style="font-size:13px;">Nessuna uscita in questo mese.</div>') +
+      '<div style="margin-top:10px;"><button class="btn btn-ghost" data-action="toggle-budgets">' + (s.showBudgets ? 'Chiudi categorie e budget' : 'Imposta budget e categorie') + '</button></div>' +
+      (s.showBudgets ? ((s.showCreateCat && s.editingCatId != null) ? renderCreateCat(s) : '') + renderManageCategories(s) : '') + '</div>' +
+      '</div>';
+  }
+
+  // ---------- andamento patrimonio ----------
+  function renderNetWorthHistory(s) {
+    var hist = (s.history || []).slice().sort(function (a, b) { return a.m < b.m ? -1 : 1; });
+    var addForm = s.showAddHistory ? (
+      '<div class="form-box" style="align-items:center;">' +
+      '<span class="muted" style="font-size:12px;flex-basis:100%;">Aggiungi il patrimonio di un mese passato (es. da un vecchio estratto conto) per avere subito uno storico.</span>' +
+      '<input class="text-input" type="month" data-field="newHistoryMonth" value="' + esc(s.newHistoryMonth) + '" max="' + monthKey() + '">' +
+      '<input class="text-input" type="text" inputmode="decimal" data-field="newHistoryValue" value="' + esc(s.newHistoryValue) + '" placeholder="Patrimonio €" style="width:130px;">' +
+      '<button class="btn btn-dark" data-action="add-history">Salva</button></div>'
+    ) : '';
+    var addBtn = '<div><button class="btn btn-ghost" data-action="toggle" data-field="showAddHistory">+ Mese passato</button></div>';
+    var title = '<div class="section-title">Andamento patrimonio</div>';
+
+    if (hist.length < 2) {
+      return '<div class="card">' + title +
+        '<div class="muted" style="font-size:13px;">Lo storico si costruisce da solo: l\'app salva il tuo patrimonio netto una volta al mese. ' +
+        (hist.length === 1 ? 'Primo punto salvato: ' + monthLabel(hist[0].m, true) + ' (' + fmt(hist[0].nw) + '). ' : '') +
+        'Dal mese prossimo vedrai il grafico, oppure aggiungi a mano qualche mese passato.</div>' + addBtn + addForm + '</div>';
+    }
+
+    var ord = function (m) { return parseInt(m.slice(0, 4), 10) * 12 + parseInt(m.slice(5, 7), 10) - 1; };
+    var o0 = ord(hist[0].m), o1 = ord(hist[hist.length - 1].m);
+    var vals = hist.map(function (h) { return h.nw; });
+    var vMax = niceMax(Math.max.apply(null, vals.concat([0])));
+    var vMinRaw = Math.min.apply(null, vals.concat([0]));
+    var vMin = vMinRaw < 0 ? -niceMax(-vMinRaw) : 0;
+    var W = 360, H = 170, padL = 38, padR = 12, padT = 10, padB = 22;
+    var plotW = W - padL - padR, plotH = H - padT - padB;
+    var x = function (m) { return padL + (o1 === o0 ? plotW / 2 : (ord(m) - o0) / (o1 - o0) * plotW); };
+    var y = function (v) { return padT + plotH - (v - vMin) / (vMax - vMin) * plotH; };
+
+    var svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" width="100%" role="img" aria-label="Patrimonio netto nel tempo" style="display:block;font-family:\'Public Sans\',sans-serif;">';
+    [vMin, (vMin + vMax) / 2, vMax].forEach(function (v, i) {
+      svg += '<line x1="' + padL + '" x2="' + (W - padR) + '" y1="' + y(v) + '" y2="' + y(v) + '" stroke="#E4E2DC" stroke-width="1"' + (i === 0 ? '' : ' stroke-dasharray="3 4"') + '/>';
+      svg += '<text x="' + (padL - 6) + '" y="' + (y(v) + 4) + '" text-anchor="end" font-size="11" fill="#6B6862">' + fmtCompact(v) + '</text>';
+    });
+    if (vMin < 0) svg += '<line x1="' + padL + '" x2="' + (W - padR) + '" y1="' + y(0) + '" y2="' + y(0) + '" stroke="#A6A39B" stroke-width="1"/>';
+    var line = hist.map(function (h, i) { return (i ? 'L' : 'M') + x(h.m).toFixed(1) + ',' + y(h.nw).toFixed(1); }).join('');
+    var base = y(Math.max(0, vMin));
+    svg += '<path d="' + line + 'L' + x(hist[hist.length - 1].m).toFixed(1) + ',' + base + 'L' + x(hist[0].m).toFixed(1) + ',' + base + 'Z" fill="' + ACCENT + '" fill-opacity="0.08"/>';
+    svg += '<path d="' + line + '" fill="none" stroke="' + ACCENT + '" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>';
+    // etichette mesi: al massimo ~7 per non sovrapporle
+    var step = Math.max(1, Math.ceil(hist.length / 7));
+    hist.forEach(function (h, i) {
+      var cx = x(h.m), cy = y(h.nw);
+      svg += '<circle cx="' + cx + '" cy="' + cy + '" r="4" fill="' + (h.manual ? '#FFFFFF' : ACCENT) + '" stroke="' + (h.manual ? ACCENT : '#FFFFFF') + '" stroke-width="2"/>';
+      svg += '<circle cx="' + cx + '" cy="' + cy + '" r="14" fill="transparent"><title>' + monthLabel(h.m, true) + ': ' + fmt(h.nw) + (h.manual ? ' (inserito a mano)' : '') + '</title></circle>';
+      if (i % step === 0 || i === hist.length - 1) {
+        svg += '<text x="' + cx + '" y="' + (H - 8) + '" text-anchor="middle" font-size="11" fill="#6B6862">' + monthLabel(h.m) + (h.m.slice(5) === '01' || i === 0 ? ' ' + h.m.slice(2, 4) : '') + '</text>';
+      }
+    });
+    svg += '</svg>';
+
+    var last = hist[hist.length - 1], prev = hist[hist.length - 2], first = hist[0];
+    var delta = function (a, b) {
+      var d = a - b;
+      var pct = b !== 0 ? ' (' + (d >= 0 ? '+' : '') + (d / Math.abs(b) * 100).toFixed(1).replace('.', ',') + '%)' : '';
+      return '<span style="color:' + (d >= 0 ? ACCENT : NEGATIVE) + ';font-weight:600;">' + (d >= 0 ? '+' : '−') + fmt(Math.abs(d)) + pct + '</span>';
+    };
+    var summary = '<div style="display:flex;flex-wrap:wrap;gap:6px 18px;font-size:13px;">' +
+      '<span>vs ' + monthLabel(prev.m, true) + ': ' + delta(last.nw, prev.nw) + '</span>' +
+      (first !== prev ? '<span>da ' + monthLabel(first.m, true) + ': ' + delta(last.nw, first.nw) + '</span>' : '') + '</div>';
+
+    var rows = hist.slice().reverse().slice(0, 12).map(function (h, i, arr) {
+      var older = arr[i + 1];
+      return '<div class="list-row" style="padding:7px 2px;"><span style="font-size:13px;text-transform:capitalize;">' + monthLabel(h.m, true) + (h.manual ? ' <span class="muted" style="font-size:11px;text-transform:none;">(a mano)</span>' : '') + '</span>' +
+        '<span style="display:flex;align-items:center;gap:10px;font-size:13px;">' + (older ? '<span style="font-size:11px;color:' + (h.nw - older.nw >= 0 ? ACCENT : NEGATIVE) + ';">' + (h.nw - older.nw >= 0 ? '+' : '−') + fmt(Math.abs(h.nw - older.nw)) + '</span>' : '') +
+        '<strong>' + fmt(h.nw) + '</strong>' + (h.manual ? '<button class="icon-btn" data-action="remove-history" data-key="' + h.m + '" aria-label="Rimuovi mese">' + xIcon() + '</button>' : '') + '</span></div>';
+    }).join('');
+
+    return '<div class="card">' + title + summary + svg +
+      '<details><summary style="cursor:pointer;font-size:13px;color:#6B6862;">Valori mese per mese</summary><div style="margin-top:6px;">' + rows + '</div></details>' +
+      addBtn + addForm + '</div>';
   }
 
   function renderImportPanel(s) {
@@ -1596,12 +2095,19 @@
     if (!s.importRows.length) return html;
 
     var newAccOpts = collectNewAccountOptions(s.importRows);
+    var dupBadge = function (r) {
+      if (!r.dup) return '';
+      return r.dup === 'exact'
+        ? '<span class="badge" style="background:rgba(179,65,58,0.1);color:' + NEGATIVE + ';">Già presente</span>'
+        : '<span class="badge" style="background:rgba(176,137,0,0.12);color:#7A5F00;" title="Stessa data, importo e tipo di un movimento già salvato">Possibile doppione</span>';
+    };
+    var dupCount = s.importRows.filter(function (r) { return r.dup; }).length;
 
     var rows = s.importRows.map(function (r, idx) {
       if (r.kind === 'transfer') {
         return '<div class="list-row" style="flex-wrap:wrap;">' +
           '<input type="checkbox" data-action="toggle-import-row" data-idx="' + idx + '" ' + (r.include ? 'checked' : '') + ' style="margin:0;">' +
-          '<span class="badge" style="background:#E4E2DC;color:#1E1D1B;">Giroconto</span>' +
+          '<span class="badge" style="background:#E4E2DC;color:#1E1D1B;">Giroconto</span>' + dupBadge(r) +
           '<input class="text-input" type="date" data-import-field="date" data-idx="' + idx + '" value="' + esc(r.date) + '" style="width:132px;">' +
           '<select class="text-input" data-import-field="fromAccountChoice" data-idx="' + idx + '" style="width:140px;">' + accountSelectOptions(s.accounts, newAccOpts, r.fromAccountChoice) + '</select>' +
           '<span class="muted">&rarr;</span>' +
@@ -1616,8 +2122,8 @@
       var catOptions = catNames.concat(extraCat).map(function (name) {
         return '<option value="' + esc(name) + '"' + (r.category === name ? ' selected' : '') + '>' + esc(name) + (extraCat.indexOf(name) > -1 ? ' (nuova)' : '') + '</option>';
       }).join('');
-      return '<div class="list-row" style="flex-wrap:wrap;">' +
-        '<input type="checkbox" data-action="toggle-import-row" data-idx="' + idx + '" ' + (r.include ? 'checked' : '') + ' style="margin:0;">' +
+      return '<div class="list-row" style="flex-wrap:wrap;' + (r.dup && !r.include ? 'opacity:0.6;' : '') + '">' +
+        '<input type="checkbox" data-action="toggle-import-row" data-idx="' + idx + '" ' + (r.include ? 'checked' : '') + ' style="margin:0;">' + dupBadge(r) +
         '<input class="text-input" type="date" data-import-field="date" data-idx="' + idx + '" value="' + esc(r.date) + '" style="width:132px;">' +
         '<select class="text-input" data-import-field="type" data-idx="' + idx + '" style="width:88px;"><option value="uscita"' + (r.type === 'uscita' ? ' selected' : '') + '>Uscita</option><option value="entrata"' + (r.type === 'entrata' ? ' selected' : '') + '>Entrata</option></select>' +
         '<select class="text-input" data-import-field="category" data-idx="' + idx + '" style="width:130px;">' + catOptions + '</select>' +
@@ -1637,6 +2143,7 @@
 
     return html + '<div class="form-box" style="flex-direction:column;align-items:stretch;margin-top:10px;">' +
       '<div class="muted" style="font-size:12px;">Controlla e correggi le righe prima di importare: categoria e conto sono proposti automaticamente dove possibile. "+ Nuovo conto" crea il conto al momento dell\'import (senza duplicati se compare più volte).</div>' +
+      (dupCount ? '<div style="font-size:12px;color:#7A5F00;background:rgba(176,137,0,0.1);border-radius:8px;padding:8px 10px;">' + dupCount + (dupCount === 1 ? ' riga sembra già presente' : ' righe sembrano già presenti') + ' tra i tuoi movimenti: le ho deselezionate. Spuntale se vuoi importarle comunque.</div>' : '') +
       '<div style="display:flex;flex-direction:column;gap:2px;max-height:360px;overflow:auto;">' + rows + '</div>' +
       '<div><button class="btn btn-primary" data-action="confirm-import">' + label + '</button></div>' +
       '</div>';
@@ -1670,15 +2177,20 @@
             '<button class="btn-link" data-action="confirm-merge-category">Conferma</button>' +
             '<button class="btn-link" data-action="cancel-merge-category">Annulla</button></div>';
         }
-        return '<div class="list-row"><div style="display:flex;align-items:center;gap:10px;">' + avatarHtml(meta, 30) + '<span style="font-size:13px;">' + esc(c.name) + '</span></div>' +
+        var extra = '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;width:100%;padding-left:40px;">' +
+          '<label style="display:flex;align-items:center;gap:6px;font-size:12px;color:#6B6862;cursor:pointer;" title="Per giroconti e compravendita di titoli: il movimento aggiorna il saldo ma non conta come ' + (type === 'income' ? 'entrata' : 'spesa') + '">' +
+          '<input type="checkbox" data-action="toggle-cat-neutral" data-id="' + c.id + '" data-cattype="' + type + '" ' + (c.neutral ? 'checked' : '') + ' style="margin:0;">Fuori dai totali</label>' +
+          (type === 'expense' ? '<label style="display:flex;align-items:center;gap:6px;font-size:12px;color:#6B6862;">Budget al mese <input class="text-input" type="text" inputmode="decimal" data-cat-budget="' + c.id + '" value="' + (Number(c.budget) > 0 ? esc(String(c.budget).replace('.', ',')) : '') + '" placeholder="€" style="width:90px;padding:6px 8px;font-size:14px;"></label>' : '') +
+          '</div>';
+        return '<div class="list-row" style="flex-wrap:wrap;gap:8px;"><div style="display:flex;align-items:center;gap:10px;">' + avatarHtml(meta, 30) + '<span style="font-size:13px;">' + esc(c.name) + '</span></div>' +
           '<div style="display:flex;gap:10px;"><button class="btn-link" data-action="start-merge-category" data-id="' + c.id + '" data-cattype="' + type + '">Unisci</button>' +
           '<button class="btn-link" data-action="edit-category" data-id="' + c.id + '" data-cattype="' + type + '">Modifica</button>' +
-          '<button class="btn-link" data-action="remove-category" data-id="' + c.id + '" data-cattype="' + type + '" style="color:' + NEGATIVE + ';">Elimina</button></div></div>';
+          '<button class="btn-link" data-action="remove-category" data-id="' + c.id + '" data-cattype="' + type + '" style="color:' + NEGATIVE + ';">Elimina</button></div>' + extra + '</div>';
       }).join('');
       return '<div><div style="font-size:12px;font-weight:600;color:#6B6862;margin-bottom:8px;text-transform:uppercase;letter-spacing:0.03em;">' + title + '</div><div style="display:flex;flex-direction:column;gap:2px;">' + rows + '</div></div>';
     };
     return '<div style="display:flex;flex-direction:column;gap:14px;padding:14px;background:#FFFFFF;border-radius:10px;border:1px solid #E4E2DC;margin-top:10px;">' +
-      '<div class="muted" style="font-size:11px;">"Unisci" sposta tutti i movimenti di una categoria in un\'altra e la elimina: utile per accorpare doppioni (es. "Groceries" e "Spesa").</div>' +
+      '<div class="muted" style="font-size:11px;">"Unisci" sposta tutti i movimenti di una categoria in un\'altra e la elimina: utile per accorpare doppioni (es. "Groceries" e "Spesa"). "Fuori dai totali" serve per giroconti e acquisto di titoli: aggiornano il saldo ma non sono spese. Il budget è un tetto mensile, lo vedi in "Mese per mese".</div>' +
       block('Categorie di uscita', s.expenseCategories, 'expense') + block('Categorie di entrata', s.incomeCategories, 'income') + '</div>';
   }
 
@@ -1821,19 +2333,27 @@
             '<div style="display:flex;gap:8px;flex-wrap:wrap;">' +
             '<input class="text-input" type="text" inputmode="decimal" data-field="editHoldingValue" value="' + esc(s.editHoldingValue) + '" placeholder="Valore" style="width:100px;">' +
             '<input class="text-input" type="text" inputmode="decimal" data-field="editHoldingChange" value="' + esc(s.editHoldingChange) + '" placeholder="Variazione %" style="width:100px;">' +
+            '<input class="text-input" type="text" inputmode="decimal" data-field="editHoldingInvested" value="' + esc(s.editHoldingInvested) + '" placeholder="Investito €" title="Quanto hai pagato in totale (prezzo di carico × quantità)" style="width:110px;">' +
             '</div>' +
             '<div class="muted" style="font-size:11px;margin-top:2px;">Per l\'aggiornamento prezzi automatico (opzionale):</div>' +
             '<div style="display:flex;gap:8px;flex-wrap:wrap;">' +
             '<select class="text-input" data-field="editHoldingAssetType" style="width:110px;"><option value="stock"' + (s.editHoldingAssetType === 'stock' ? ' selected' : '') + '>Azione/ETF</option><option value="crypto"' + (s.editHoldingAssetType === 'crypto' ? ' selected' : '') + '>Crypto</option></select>' +
-            '<input class="text-input" type="text" data-field="editHoldingTicker" value="' + esc(s.editHoldingTicker) + '" placeholder="Ticker (es. AAPL, BTC)" style="width:130px;">' +
+            '<input class="text-input" type="text" data-field="editHoldingTicker" value="' + esc(s.editHoldingTicker) + '" placeholder="Ticker (es. VWCE.DEX, BTC)" style="width:150px;">' +
             '<input class="text-input" type="text" inputmode="decimal" data-field="editHoldingQty" value="' + esc(s.editHoldingQty) + '" placeholder="Quantità" style="width:100px;">' +
             '</div>' +
             '<div style="display:flex;gap:8px;"><button class="btn btn-primary" data-action="save-edit-holding" data-id="' + h.id + '">Salva</button><button class="btn btn-ghost" data-action="cancel-edit-holding">Annulla</button></div>' +
             '</div>';
         }
+        var plHtml = '';
+        if (h.invested != null && Number(h.invested) > 0) {
+          var pl = Number(h.value || 0) - Number(h.invested);
+          var plPct = pl / Number(h.invested) * 100;
+          plHtml = '<div style="font-size:12px;margin-top:6px;color:#6B6862;">Investito ' + fmt(h.invested) + ' &middot; <span style="font-weight:600;color:' + (pl >= 0 ? ACCENT : NEGATIVE) + ';">' + (pl >= 0 ? '+' : '−') + fmt(Math.abs(pl)) + ' (' + (pl >= 0 ? '+' : '') + plPct.toFixed(1).replace('.', ',') + '%)</span></div>';
+        }
         return '<div style="border:1px solid #E4E2DC;border-radius:12px;padding:14px 16px;display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">' +
           '<button data-action="start-edit-holding" data-id="' + h.id + '" style="background:none;border:none;cursor:pointer;padding:0;text-align:left;">' +
-          '<div style="font-size:14px;font-weight:600;color:#1E1D1B;">' + esc(h.name) + (h.ticker ? ' <span class="muted" style="font-weight:400;">' + esc(h.ticker) + '</span>' : '') + '</div><div style="font-size:17px;font-weight:600;margin-top:6px;font-family:\'Fraunces\',serif;color:#1E1D1B;">' + fmt(h.value) + '</div><div style="font-size:13px;font-weight:600;margin-top:2px;color:' + (changePct >= 0 ? ACCENT : NEGATIVE) + ';">' + changeFmt + '</div>' +
+          '<div style="font-size:14px;font-weight:600;color:#1E1D1B;">' + esc(h.name) + (h.ticker ? ' <span class="muted" style="font-weight:400;">' + esc(h.ticker) + '</span>' : '') + '</div><div style="font-size:17px;font-weight:600;margin-top:6px;font-family:\'Fraunces\',serif;color:#1E1D1B;">' + fmt(h.value) + '</div><div style="font-size:13px;font-weight:600;margin-top:2px;color:' + (changePct >= 0 ? ACCENT : NEGATIVE) + ';">' + changeFmt + ' <span class="muted" style="font-weight:400;font-size:11px;">' + (h.priceUpdatedAt ? 'oggi &middot; prezzo del ' + fmtDate(h.priceUpdatedAt) : 'variazione') + '</span></div>' +
+          plHtml +
           '</button>' +
           '<button class="icon-btn" data-action="remove-holding" data-id="' + h.id + '" aria-label="Rimuovi posizione">' + xIcon() + '</button></div>';
       }).join('');
@@ -1852,11 +2372,12 @@
       '<input class="text-input" type="text" data-field="newHoldingName" value="' + esc(s.newHoldingName) + '" placeholder="Nome titolo" style="flex:1 1 160px;">' +
       '<input class="text-input" type="text" inputmode="decimal" data-field="newHoldingValue" value="' + esc(s.newHoldingValue) + '" placeholder="Valore attuale" style="width:120px;">' +
       '<input class="text-input" type="text" inputmode="decimal" data-field="newHoldingChange" value="' + esc(s.newHoldingChange) + '" placeholder="Variazione %" style="width:110px;">' +
+      '<input class="text-input" type="text" inputmode="decimal" data-field="newHoldingInvested" value="' + esc(s.newHoldingInvested) + '" placeholder="Investito € (facoltativo)" title="Quanto hai pagato in totale: serve per calcolare guadagno o perdita" style="width:180px;">' +
       '</div>' +
       '<div class="muted" style="font-size:11px;margin-top:8px;">Per l\'aggiornamento prezzi automatico (opzionale):</div>' +
       '<div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:4px;">' +
       '<select class="text-input" data-field="newHoldingAssetType" style="width:110px;"><option value="stock"' + (s.newHoldingAssetType === 'stock' ? ' selected' : '') + '>Azione/ETF</option><option value="crypto"' + (s.newHoldingAssetType === 'crypto' ? ' selected' : '') + '>Crypto</option></select>' +
-      '<input class="text-input" type="text" data-field="newHoldingTicker" value="' + esc(s.newHoldingTicker) + '" placeholder="Ticker (es. AAPL, BTC)" style="width:140px;">' +
+      '<input class="text-input" type="text" data-field="newHoldingTicker" value="' + esc(s.newHoldingTicker) + '" placeholder="Ticker (es. VWCE.DEX, BTC)" style="width:160px;">' +
       '<input class="text-input" type="text" inputmode="decimal" data-field="newHoldingQty" value="' + esc(s.newHoldingQty) + '" placeholder="Quantità" style="width:100px;">' +
       '</div>' +
       '<div style="margin-top:10px;"><button class="btn btn-dark" data-action="add-holding">Salva</button></div></div>'
@@ -1869,8 +2390,12 @@
 
     var priceSettingsBox = s.showPriceSettings ? (
       '<div class="form-box" style="flex-direction:column;align-items:stretch;">' +
-      '<div class="muted" style="font-size:12px;">Le crypto si aggiornano gratis (CoinGecko, nessuna chiave). Per azioni/ETF serve una chiave gratuita da <a href="https://twelvedata.com/pricing" target="_blank" rel="noopener">twelvedata.com</a> (piano free, 1 minuto).</div>' +
-      '<div style="display:flex;gap:10px;flex-wrap:wrap;"><input class="text-input" type="password" data-field="priceKeyInput" value="' + esc(s.priceKeyInput) + '" placeholder="Chiave Twelve Data" style="flex:1 1 200px;"><button class="btn btn-dark" data-action="save-price-key">Salva</button></div>' +
+      '<div class="muted" style="font-size:12px;line-height:1.5;"><strong>Crypto</strong> (es. BTC, ETH): gratis con CoinGecko, nessuna chiave.<br>' +
+      '<strong>ETF e azioni europee</strong> (es. <code>VWCE.DEX</code>, <code>MBG.DEX</code> per Xetra, in euro): chiave gratuita di <a href="https://www.alphavantage.co/support/#api-key" target="_blank" rel="noopener">Alpha Vantage</a> (max 25 richieste al giorno). Metti il suffisso di borsa nel ticker.<br>' +
+      '<strong>Azioni/ETF USA</strong> (es. AAPL): chiave gratuita di <a href="https://twelvedata.com/pricing" target="_blank" rel="noopener">Twelve Data</a>; i prezzi in dollari vengono convertiti in euro. Il piano gratuito di Twelve Data non copre le borse europee.<br>' +
+      'Il valore diventa prezzo × quantità: imposta ticker e quantità su ogni posizione. Le chiavi restano sul telefono e non finiscono nel backup.</div>' +
+      '<div style="display:flex;gap:10px;flex-wrap:wrap;"><input class="text-input" type="password" data-field="avKeyInput" value="' + esc(s.avKeyInput) + '" placeholder="Chiave Alpha Vantage (ETF europei)" style="flex:1 1 200px;"></div>' +
+      '<div style="display:flex;gap:10px;flex-wrap:wrap;"><input class="text-input" type="password" data-field="priceKeyInput" value="' + esc(s.priceKeyInput) + '" placeholder="Chiave Twelve Data (USA)" style="flex:1 1 200px;"><button class="btn btn-dark" data-action="save-price-key">Salva chiavi</button></div>' +
       '</div>'
     ) : '';
 
@@ -1882,7 +2407,18 @@
       (s.priceRefreshStatus ? '<div class="muted" style="font-size:12px;">' + esc(s.priceRefreshStatus) + '</div>' : '') +
       priceSettingsBox;
 
+    var withCost = s.portfolio.filter(function (h) { return h.invested != null && Number(h.invested) > 0; });
+    var plSummary = '';
+    if (withCost.length) {
+      var inv = withCost.reduce(function (sum, h) { return sum + Number(h.invested); }, 0);
+      var val = withCost.reduce(function (sum, h) { return sum + Number(h.value || 0); }, 0);
+      var plTot = val - inv;
+      plSummary = '<div style="font-size:13px;color:#6B6862;margin-top:-8px;">Investito ' + fmt(inv) + ' &middot; ' +
+        '<span style="font-weight:600;color:' + (plTot >= 0 ? ACCENT : NEGATIVE) + ';">' + (plTot >= 0 ? 'Guadagno ' : 'Perdita ') + fmt(Math.abs(plTot)) + ' (' + (plTot >= 0 ? '+' : '−') + Math.abs(plTot / inv * 100).toFixed(1).replace('.', ',') + '%)</span>' +
+        (withCost.length < s.portfolio.length ? ' <span style="font-size:11px;">su ' + withCost.length + ' posizioni su ' + s.portfolio.length + '</span>' : '') + '</div>';
+    }
     return '<div class="card"><div class="row"><div class="section-title">Portafogli</div><div style="font-size:13px;color:#6B6862;">Totale: <span style="font-weight:600;color:#1E1D1B;">' + fmt(totalPortfolio) + '</span></div></div>' +
+      plSummary +
       refreshRow +
       sections +
       '<div style="display:flex;flex-wrap:wrap;gap:10px;"><button class="btn btn-primary" data-action="toggle" data-field="showAddHolding">+ Aggiungi posizione</button><button class="btn btn-ghost" data-action="toggle" data-field="showAddPortfolio">+ Nuovo portafoglio</button><button class="btn btn-ghost" data-action="toggle" data-field="showImportHoldings">Importa posizioni</button></div>' +
@@ -1893,7 +2429,7 @@
     if (!s.showImportHoldings) return '';
     var html = '<div class="form-box" style="flex-direction:column;align-items:stretch;margin-top:10px;">' +
       '<div class="row" style="align-items:center;"><div style="font-size:14px;font-weight:600;">Importa posizioni da CSV</div><button class="btn-link" data-action="toggle" data-field="showImportHoldings">Chiudi</button></div>' +
-      '<div class="muted" style="font-size:12px;">Colonne: Portafoglio, Nome, Ticker, Tipo (stock/crypto), Quantita, Valore, Variazione. Le posizioni si aggiungono a quelle esistenti, non le sostituiscono.</div>' +
+      '<div class="muted" style="font-size:12px;">Colonne: Portafoglio, Nome, Ticker, Tipo (stock/crypto), Quantita, Valore, Variazione, Investito (facoltativa: quanto hai pagato in totale). Le posizioni si aggiungono a quelle esistenti, non le sostituiscono.</div>' +
       '<input type="file" accept=".csv" data-action="import-holdings-file" style="margin-top:4px;">';
     if (s.importHoldingsBusy) html += '<div class="muted" style="font-size:13px;">Analisi del file in corso...</div>';
     if (s.importHoldingsError) html += '<div style="color:' + NEGATIVE + ';font-size:13px;">' + esc(s.importHoldingsError) + '</div>';
@@ -1912,6 +2448,7 @@
         '<input class="text-input" type="text" inputmode="decimal" data-import-holding-field="qty" data-idx="' + idx + '" value="' + esc(r.qty) + '" placeholder="Quantità" style="width:90px;">' +
         '<input class="text-input" type="text" inputmode="decimal" data-import-holding-field="value" data-idx="' + idx + '" value="' + esc(r.value) + '" placeholder="Valore" style="width:90px;">' +
         '<input class="text-input" type="text" inputmode="decimal" data-import-holding-field="change" data-idx="' + idx + '" value="' + esc(r.change) + '" placeholder="Var. %" style="width:80px;">' +
+        '<input class="text-input" type="text" inputmode="decimal" data-import-holding-field="invested" data-idx="' + idx + '" value="' + esc(r.invested || '') + '" placeholder="Investito" style="width:90px;">' +
         '<button class="icon-btn" data-action="remove-import-holding-row" data-idx="' + idx + '" aria-label="Rimuovi riga">' + xIcon() + '</button>' +
         '</div>';
     }).join('');
@@ -1954,6 +2491,10 @@
       switch (action) {
         case 'toggle': App.toggle(el.dataset.field); break;
         case 'pick-period': App.pickPeriod(el.dataset.key); break;
+        case 'pick-month': App.pickMonth(el.dataset.key); break;
+        case 'toggle-budgets': App.toggleBudgets(); break;
+        case 'add-history': App.addHistory(); break;
+        case 'remove-history': App.removeHistory(el.dataset.key); break;
         case 'filter-tx-category': App.filterTxCategory(el.dataset.cat); break;
         case 'clear-tx-category-filter': App.clearTxCategoryFilter(); break;
         case 'toggle-edit-goal': App.toggleEditGoal(); break;
@@ -1992,9 +2533,11 @@
         case 'cancel-merge-category': App.cancelMergeCategory(); break;
         case 'confirm-merge-category': App.confirmMergeCategory(); break;
         case 'remove-category': App.deleteCategory(el.dataset.id, el.dataset.cattype); break;
+        case 'toggle-cat-neutral': App.toggleCategoryNeutral(el.dataset.id, el.dataset.cattype); break;
         case 'export-csv': App.exportCSV(); break;
         case 'print-page': App.printPage(); break;
         case 'export-backup': App.exportBackup(); break;
+        case 'reload-app': window.location.reload(); break;
         case 'confirm-restore-backup': App.confirmRestoreBackup(); break;
         case 'cancel-restore-backup': App.cancelRestoreBackup(); break;
         case 'toggle-reset-confirm': App.toggleResetConfirm(); break;
@@ -2041,6 +2584,10 @@
         if (t.files && t.files[0]) App.handleHoldingsImportFile(t.files[0]);
         return;
       }
+      if (t.dataset && t.dataset.catBudget) {
+        App.setCategoryBudget(t.dataset.catBudget, t.value);
+        return;
+      }
       if (t.dataset && t.dataset.importHoldingField) {
         App.setImportHoldingField(Number(t.dataset.idx), t.dataset.importHoldingField, t.value);
         return;
@@ -2057,7 +2604,14 @@
 
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', function () {
-      navigator.serviceWorker.register('sw.js').catch(function () {});
+      var hadController = !!navigator.serviceWorker.controller;
+      navigator.serviceWorker.register('sw.js').then(function (reg) {
+        reg.update().catch(function () {});
+      }).catch(function () {});
+      // Una nuova versione ha preso il controllo: proponi di ricaricare (solo se c'era già una versione attiva).
+      navigator.serviceWorker.addEventListener('controllerchange', function () {
+        if (hadController && !state.updateReady) { state.updateReady = true; renderPreserveFocus(); }
+      });
     });
   }
 })();

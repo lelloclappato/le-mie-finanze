@@ -8,7 +8,19 @@ Nata come [Claude Artifact](https://claude.ai) e portata in HTML/CSS/JS puro com
 
 Tutti i dati che inserisci (conti, spese, debiti...) restano **solo nel browser del tuo telefono** (`localStorage`). Non vengono mai inviati a un server: questo repository contiene solo il codice dell'app vuota, mai le tue informazioni finanziarie.
 
-Per lo stesso motivo: se disinstalli l'app o cancelli i dati del browser, i dati inseriti si perdono. Usa "Esporta CSV" ogni tanto per un backup dei movimenti.
+Per lo stesso motivo: se disinstalli l'app o cancelli i dati del browser, i dati inseriti si perdono. Usa "Esporta backup (.json)" in fondo alla pagina: l'app te lo ricorda se l'ultimo backup ha più di 30 giorni. Il backup non contiene le chiavi API.
+
+## Cosa fa
+
+- **Entrate e uscite** per categoria, con periodi a scelta, import da CSV/Excel/PDF (anche export Trade Republic e Isybank) e controllo dei doppioni.
+- **Giroconti e compravendita di titoli** restano fuori da entrate/uscite: aggiornano il saldo ma non contano come spese (categorie "Fuori dai totali", modificabili in "Gestisci categorie").
+- **Mese per mese**: grafico degli ultimi 12 mesi, confronto delle categorie con il mese prima e **budget mensili** per categoria.
+- **Patrimonio netto** (conti + portafogli + crediti − debiti) con **storico mensile** automatico e grafico.
+- **Portafogli** con prezzo di carico (guadagno/perdita) e aggiornamento prezzi: crypto con CoinGecko, ETF europei con Alpha Vantage (ticker tipo `VWCE.DEX`), azioni USA con Twelve Data (convertite in euro).
+
+## Pubblicare un aggiornamento
+
+Quando modifichi il codice, aumenta `CACHE_NAME` in `sw.js` (es. `v2` → `v3`): così i telefoni scaricano la nuova versione e l'app mostra "Aggiorna".
 
 ## Come installarla sul telefono
 
