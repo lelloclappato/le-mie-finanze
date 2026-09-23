@@ -212,13 +212,25 @@
     }
     return parseFloat(s);
   }
+  function numOrZero(v) {
+    var n = parseAmountStr(v || '');
+    return isNaN(n) ? 0 : n;
+  }
+  function indexByNames(header) {
+    var map = {};
+    (header || []).forEach(function (h, i) {
+      var key = String(h == null ? '' : h).toLowerCase().trim();
+      if (key && map[key] === undefined) map[key] = i;
+    });
+    return map;
+  }
 
   var CATEGORY_KEYWORDS = {
     'Spesa': ['supermerc', 'esselunga', 'conad', 'coop ', 'carrefour', 'lidl', 'eurospin', 'md ', 'pam ', 'despar', 'iper'],
     'Ristoranti': ['ristorante', 'pizzeria', 'trattoria', 'sushi', 'mcdonald', 'burger', 'osteria'],
     'Bar': ['bar ', 'caffe', 'caffè', 'cafe', 'starbucks'],
     'Trasporti': ['benzina', 'carburant', ' eni ', ' esso ', ' q8 ', 'autostrad', 'atm ', 'trenitalia', 'italo', 'uber', 'taxi', 'telepass'],
-    'Casa': ['affitto', 'condominio', 'enel', 'eni gas', 'a2a', 'iren', 'tim ', 'vodafone', 'wind tre', 'fastweb', 'mutuo'],
+    'Casa': ['affitto', 'condominio', 'enel', 'eni gas', 'a2a', 'iren', 'tim ', 'vodafone', 'wind tre', 'fastweb', 'mutuo', 'iliad'],
     'Salute': ['farmacia', 'ospedale', 'medico', 'dentista', 'parafarmacia'],
     'Svago': ['cinema', 'netflix', 'spotify', 'sky ', 'disney', 'teatro'],
     'Abbonamenti': ['abbonamento', 'canone', 'subscription'],
@@ -419,19 +431,87 @@
 
   function classifySheet(sheetName, rows) {
     if (!rows || !rows.length) return null;
-    var headerIdx = -1, map = null, isTransfer = false;
-    for (var i = 0; i < Math.min(rows.length, 5); i++) {
+    var headerIdx = -1, map = null, kind = null;
+    for (var i = 0; i < Math.min(rows.length, 20); i++) {
+      var headerLower = (rows[i] || []).map(function (h) { return String(h == null ? '' : h).toLowerCase().trim(); });
+      if (headerLower.indexOf('datetime') > -1 && headerLower.indexOf('account_type') > -1 && headerLower.indexOf('counterparty_iban') > -1) {
+        headerIdx = i; kind = 'tx-traderepublic'; break;
+      }
+      if (headerLower.indexOf('operazione') > -1 && headerLower.indexOf('dettagli') > -1) {
+        headerIdx = i; kind = 'tx-isybank'; break;
+      }
       var candidate = detectHeaderMap(rows[i]);
       var candTransfer = candidate.outgoing !== undefined && candidate.incoming !== undefined && candidate.date !== undefined;
       var candTx = !candTransfer && candidate.date !== undefined && candidate.amount !== undefined;
-      if (candTransfer || candTx) { headerIdx = i; map = candidate; isTransfer = candTransfer; break; }
+      if (candTransfer || candTx) { headerIdx = i; map = candidate; kind = candTransfer ? 'transfer' : 'tx'; break; }
     }
     if (headerIdx === -1) return { kind: 'generic', rows: rows };
+    if (kind === 'tx-traderepublic' || kind === 'tx-isybank') {
+      return { kind: kind, headerRow: rows[headerIdx], rows: rows.slice(headerIdx + 1) };
+    }
     var lowerName = (sheetName || '').toLowerCase();
     var forcedType = null;
     if (/expense|spes|uscit/.test(lowerName)) forcedType = 'uscita';
     else if (/income|entrat/.test(lowerName)) forcedType = 'entrata';
-    return { kind: isTransfer ? 'transfer' : 'tx', map: map, rows: rows.slice(headerIdx + 1), forcedType: forcedType };
+    return { kind: kind, map: map, rows: rows.slice(headerIdx + 1), forcedType: forcedType };
+  }
+
+  function buildTxItemsFromTradeRepublicRows(rows, headerRow, categories) {
+    var idx = indexByNames(headerRow);
+    var items = [];
+    rows.forEach(function (row) {
+      var rowCat = cellStr(row, idx.category).toUpperCase();
+      if (rowCat === 'DELIVERY') return;
+      var amt = numOrZero(cellStr(row, idx.amount)) + numOrZero(cellStr(row, idx.fee)) + numOrZero(cellStr(row, idx.tax));
+      if (!amt) return;
+      var dateVal = cellStr(row, idx.date);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(dateVal)) return;
+      var type = amt >= 0 ? 'entrata' : 'uscita';
+      var absAmount = Math.abs(amt);
+      var rowType = cellStr(row, idx.type).toUpperCase();
+      var name = cellStr(row, idx.name);
+      var desc = cellStr(row, idx.description);
+      var counterparty = cellStr(row, idx.counterparty_name);
+      var note, category;
+      if (rowCat === 'TRADING') {
+        note = (name + ' ' + desc).trim();
+        category = 'Investimenti';
+      } else {
+        note = (desc || counterparty || name).replace(/null$/i, '').trim();
+        var catList = type === 'entrata' ? categories.incomeCategories : categories.expenseCategories;
+        if (rowType === 'CARD_TRANSACTION' || rowType === 'CARD_TRANSACTION_INTERNATIONAL') category = guessCategory(note, catList);
+        else if (rowType === 'INTEREST_PAYMENT') category = 'Interessi';
+        else if (rowType === 'DIVIDEND' || rowType === 'BENEFITS_SAVEBACK' || rowType === 'STOCKPERK') category = 'Investimenti';
+        else if (/TRANSFER|CUSTOMER_INBOUND|CUSTOMER_OUTBOUND|MANUAL_CASH_TRANSFER/.test(rowType)) category = 'Giroconti';
+        else category = 'Altro';
+      }
+      items.push({ kind: 'tx', date: dateVal, note: note.slice(0, 140), amount: String(absAmount.toFixed(2)).replace('.', ','), type: type, category: category, accountName: 'Trade Republic', accountChoice: '', include: true });
+    });
+    return items;
+  }
+
+  function buildTxItemsFromIsybankRows(rows, headerRow, categories) {
+    var idx = indexByNames(headerRow);
+    var items = [];
+    rows.forEach(function (row) {
+      var dateVal = cellToISODate(row[idx.data]);
+      if (!dateVal) return;
+      var amt = numOrZero(cellStr(row, idx.importo));
+      if (!amt) return;
+      var type = amt >= 0 ? 'entrata' : 'uscita';
+      var absAmount = Math.abs(amt);
+      var operazione = cellStr(row, idx.operazione);
+      var dettagli = cellStr(row, idx.dettagli);
+      var combined = (operazione + ' ' + dettagli).toLowerCase();
+      var category;
+      if (combined.indexOf('trade republic') > -1) category = 'Giroconti';
+      else {
+        var catList = type === 'entrata' ? categories.incomeCategories : categories.expenseCategories;
+        category = guessCategory(operazione + ' ' + dettagli, catList);
+      }
+      items.push({ kind: 'tx', date: dateVal, note: operazione.slice(0, 140), amount: String(absAmount.toFixed(2)).replace('.', ','), type: type, category: category, accountName: 'Isybank', accountChoice: '', include: true });
+    });
+    return items;
   }
 
   function cellStr(row, idx) {
@@ -541,6 +621,8 @@
       if (!classified) return;
       if (classified.kind === 'tx') items = items.concat(buildTxItemsFromMappedSheet(classified, categories));
       else if (classified.kind === 'transfer') items = items.concat(buildTransferItemsFromMappedSheet(classified));
+      else if (classified.kind === 'tx-traderepublic') items = items.concat(buildTxItemsFromTradeRepublicRows(classified.rows, classified.headerRow, categories));
+      else if (classified.kind === 'tx-isybank') items = items.concat(buildTxItemsFromIsybankRows(classified.rows, classified.headerRow, categories));
       else items = items.concat(rowsToImportItems(classified.rows, categories));
     });
     items.forEach(function (item) {
@@ -619,6 +701,14 @@
       });
     },
     removeAccount: function (id) { update({ accounts: state.accounts.filter(function (a) { return a.id !== id; }) }); },
+    clearAccountTransactions: function (id) {
+      var linked = state.transactions.filter(function (t) { return t.accountId === id; });
+      if (!linked.length) return;
+      if (!window.confirm('Cancellare i ' + linked.length + ' movimenti già registrati su questo conto e riportare il saldo a 0? (Eventuali giroconti già applicati verranno azzerati insieme al resto.) Non si può annullare.')) return;
+      var transactions = state.transactions.filter(function (t) { return t.accountId !== id; });
+      var accounts = state.accounts.map(function (a) { return a.id === id ? Object.assign({}, a, { balance: 0 }) : a; });
+      update({ transactions: transactions, accounts: accounts });
+    },
     toggleExcludeAccount: function (id) {
       update({ accounts: state.accounts.map(function (a) { return a.id === id ? Object.assign({}, a, { excludeFromTotal: !a.excludeFromTotal }) : a; }) });
     },
@@ -1047,22 +1137,30 @@
       render();
     },
 
-    handleImportFile: function (file) {
-      if (!file) return;
+    handleImportFile: function (fileList) {
+      var files = Array.prototype.slice.call(fileList || []);
+      if (!files.length) return;
       update({ importBusy: true, importError: '', importSuccess: '', importRows: [] });
-      var name = file.name.toLowerCase();
       var categories = { expenseCategories: state.expenseCategories, incomeCategories: state.incomeCategories };
       var accountsSnapshot = state.accounts;
-      var reader;
-      if (/\.csv$/.test(name)) reader = readCSVFile(file);
-      else if (/\.xlsx$|\.xls$/.test(name)) reader = readXLSXFile(file);
-      else if (/\.pdf$/.test(name)) reader = readPDFFile(file);
-      else { update({ importBusy: false, importError: 'Formato non supportato. Usa un file CSV, Excel (.xlsx) o PDF.' }); return; }
+      var unsupported = [];
+      var readers = files.map(function (file) {
+        var name = file.name.toLowerCase();
+        if (/\.csv$/.test(name)) return readCSVFile(file);
+        if (/\.xlsx$|\.xls$/.test(name)) return readXLSXFile(file);
+        if (/\.pdf$/.test(name)) return readPDFFile(file);
+        unsupported.push(file.name);
+        return Promise.resolve([]);
+      });
 
-      reader.then(function (sheetsResult) {
+      Promise.all(readers).then(function (results) {
+        var sheetsResult = [];
+        results.forEach(function (sheets) { sheetsResult = sheetsResult.concat(sheets); });
         var items = buildImportItemsFromSheets(sheetsResult, categories, accountsSnapshot);
         if (!items.length) {
-          update({ importBusy: false, importError: 'Non ho trovato movimenti riconoscibili in questo file. Controlla il formato oppure inseriscili a mano.' });
+          var msg = 'Non ho trovato movimenti riconoscibili in questi file. Controlla il formato oppure inseriscili a mano.';
+          if (unsupported.length) msg = 'Formato non supportato: ' + unsupported.join(', ') + '. Usa CSV, Excel (.xlsx) o PDF.';
+          update({ importBusy: false, importError: msg });
           return;
         }
         update({ importBusy: false, importRows: items });
@@ -1459,8 +1557,8 @@
     if (!s.showImport) return '';
     var html = '<div class="form-box" style="flex-direction:column;align-items:stretch;">' +
       '<div class="row" style="align-items:center;"><div style="font-size:14px;font-weight:600;">Importa movimenti da CSV, Excel o PDF</div><button class="btn-link" data-action="toggle" data-field="showImport">Chiudi</button></div>' +
-      '<div class="muted" style="font-size:12px;">Funziona con estratti conto, file esportati da Excel (anche con fogli Expenses/Income/Transfers) o PDF. Le righe vengono proposte per la revisione prima di essere aggiunte. La prima volta serve una connessione a internet per caricare le librerie di lettura.</div>' +
-      '<input type="file" accept=".csv,.xlsx,.xls,.pdf" data-action="import-file" style="margin-top:4px;">';
+      '<div class="muted" style="font-size:12px;">Funziona con estratti conto (anche export ufficiali di Trade Republic e Isybank), file Excel (anche con fogli Expenses/Income/Transfers) o PDF. Puoi selezionare più file insieme. Le righe vengono proposte per la revisione prima di essere aggiunte. La prima volta serve una connessione a internet per caricare le librerie di lettura.</div>' +
+      '<input type="file" accept=".csv,.xlsx,.xls,.pdf" data-action="import-file" multiple style="margin-top:4px;">';
     if (s.importBusy) html += '<div class="muted" style="font-size:13px;">Analisi del file in corso...</div>';
     if (s.importError) html += '<div style="color:' + NEGATIVE + ';font-size:13px;">' + esc(s.importError) + '</div>';
     if (s.importSuccess) html += '<div style="color:' + ACCENT + ';font-size:13px;font-weight:600;">' + esc(s.importSuccess) + '</div>';
@@ -1566,6 +1664,9 @@
         '<button class="icon-btn" data-action="remove-account" data-id="' + a.id + '" aria-label="Rimuovi conto">' + xIcon() + '</button></div>' +
         balanceBlock +
         '<label style="display:flex;align-items:center;gap:7px;font-size:12px;color:' + (a.excludeFromTotal ? WARN : '#6B6862') + ';cursor:pointer;"><input type="checkbox" data-field="account-exclude-' + a.id + '" data-action="toggle-exclude" data-id="' + a.id + '" ' + (a.excludeFromTotal ? 'checked' : '') + ' style="margin:0;">' + (a.excludeFromTotal ? 'Escluso dal totale' : 'Incluso nel totale') + '</label>' +
+        (s.transactions.some(function (t) { return t.accountId === a.id; })
+          ? '<button class="btn-link" data-action="clear-account-tx" data-id="' + a.id + '" style="color:' + NEGATIVE + ';">Svuota movimenti di questo conto</button>'
+          : '') +
         '</div>';
     }).join('');
 
@@ -1801,6 +1902,7 @@
         case 'save-goal': App.saveGoal(); break;
         case 'add-account': App.addAccount(); break;
         case 'remove-account': App.removeAccount(numId); break;
+        case 'clear-account-tx': App.clearAccountTransactions(numId); break;
         case 'toggle-exclude': App.toggleExcludeAccount(numId); break;
         case 'start-edit-balance': App.startEditBalance(numId); break;
         case 'save-edit-balance': App.saveEditBalance(numId); break;
@@ -1871,7 +1973,7 @@
         return;
       }
       if (t.type === 'file' && t.dataset && t.dataset.action === 'import-file') {
-        if (t.files && t.files[0]) App.handleImportFile(t.files[0]);
+        if (t.files && t.files.length) App.handleImportFile(t.files);
         return;
       }
       if (t.type === 'file' && t.dataset && t.dataset.action === 'import-backup-file') {
