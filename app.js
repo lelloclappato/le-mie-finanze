@@ -40,7 +40,24 @@
 
   var RECUR_LABELS = { monthly: 'Ogni mese', quarterly: 'Ogni 3 mesi', semiannual: 'Ogni 6 mesi' };
 
-  var PERSIST_KEYS = ['accounts', 'debts', 'upcoming', 'portfolio', 'portfolios', 'transactions', 'goal', 'expenseCategories', 'incomeCategories'];
+  var PERSIST_KEYS = ['accounts', 'debts', 'upcoming', 'portfolio', 'portfolios', 'transactions', 'goal', 'expenseCategories', 'incomeCategories', 'marketSymbols', 'twelveDataApiKey'];
+
+  var DEFAULT_MARKET_SYMBOLS = 'FOREXCOM:SPXUSD,NASDAQ:IXIC,BITSTAMP:BTCUSD,BITSTAMP:ETHUSD';
+
+  var CRYPTO_ID_MAP = {
+    btc: 'bitcoin', bitcoin: 'bitcoin',
+    eth: 'ethereum', ethereum: 'ethereum',
+    xrp: 'ripple', ripple: 'ripple',
+    dot: 'polkadot', polkadot: 'polkadot',
+    near: 'near',
+    ada: 'cardano', cardano: 'cardano',
+    sol: 'solana', solana: 'solana',
+    doge: 'dogecoin', dogecoin: 'dogecoin',
+    usdt: 'tether', tether: 'tether',
+    usdc: 'usd-coin',
+    bnb: 'binancecoin',
+    ltc: 'litecoin', litecoin: 'litecoin'
+  };
 
   function defaultState() {
     return {
@@ -67,8 +84,14 @@
       newPaymentCategory: '', newPaymentRecurrence: 'none',
 
       showAddHolding: false, newHoldingName: '', newHoldingValue: '', newHoldingChange: '', newHoldingPortfolioId: '1',
+      newHoldingTicker: '', newHoldingQty: '', newHoldingAssetType: 'stock',
       showAddPortfolio: false, newPortfolioName: '',
       editingHoldingId: null, editHoldingName: '', editHoldingValue: '', editHoldingChange: '',
+      editHoldingTicker: '', editHoldingQty: '', editHoldingAssetType: 'stock',
+
+      marketSymbols: DEFAULT_MARKET_SYMBOLS, marketSymbolsInput: DEFAULT_MARKET_SYMBOLS,
+      twelveDataApiKey: '', showPriceSettings: false, priceKeyInput: '',
+      priceRefreshBusy: false, priceRefreshStatus: '',
 
       showAddTx: false, newTxCategory: '', newTxAmount: '', newTxType: 'uscita', newTxDate: '', newTxNote: '', newTxAccountId: '',
       showImport: false, importBusy: false, importError: '', importSuccess: '', importRows: [],
@@ -95,6 +118,7 @@
       }
     } catch (e) {}
   })();
+  state.marketSymbolsInput = state.marketSymbols;
 
   function save() {
     try {
@@ -604,15 +628,21 @@
       if (!state.newHoldingName || state.newHoldingValue === '') return;
       var pid = parseFloat(state.newHoldingPortfolioId) || (state.portfolios[0] && state.portfolios[0].id) || 1;
       update({
-        portfolio: state.portfolio.concat([{ id: uid(), name: state.newHoldingName, value: numVal(state.newHoldingValue) || 0, changePct: numVal(state.newHoldingChange) || 0, portfolioId: pid }]),
-        newHoldingName: '', newHoldingValue: '', newHoldingChange: '', showAddHolding: false
+        portfolio: state.portfolio.concat([{
+          id: uid(), name: state.newHoldingName, value: numVal(state.newHoldingValue) || 0, changePct: numVal(state.newHoldingChange) || 0, portfolioId: pid,
+          ticker: state.newHoldingTicker.trim().toUpperCase(), quantity: state.newHoldingQty === '' ? null : (numVal(state.newHoldingQty) || 0), assetType: state.newHoldingAssetType
+        }]),
+        newHoldingName: '', newHoldingValue: '', newHoldingChange: '', newHoldingTicker: '', newHoldingQty: '', newHoldingAssetType: 'stock', showAddHolding: false
       });
     },
     removeHolding: function (id) { update({ portfolio: state.portfolio.filter(function (h) { return h.id !== id; }) }); },
     startEditHolding: function (id) {
       var h = state.portfolio.find(function (x) { return x.id === id; });
       if (!h) return;
-      update({ editingHoldingId: id, editHoldingName: h.name, editHoldingValue: String(h.value), editHoldingChange: String(h.changePct) });
+      update({
+        editingHoldingId: id, editHoldingName: h.name, editHoldingValue: String(h.value), editHoldingChange: String(h.changePct),
+        editHoldingTicker: h.ticker || '', editHoldingQty: h.quantity != null ? String(h.quantity) : '', editHoldingAssetType: h.assetType || 'stock'
+      });
     },
     cancelEditHolding: function () { update({ editingHoldingId: null }); },
     saveEditHolding: function (id) {
@@ -620,9 +650,12 @@
       if (!name) return;
       update({
         portfolio: state.portfolio.map(function (h) {
-          return h.id === id ? Object.assign({}, h, { name: name, value: numVal(state.editHoldingValue) || 0, changePct: numVal(state.editHoldingChange) || 0 }) : h;
+          return h.id === id ? Object.assign({}, h, {
+            name: name, value: numVal(state.editHoldingValue) || 0, changePct: numVal(state.editHoldingChange) || 0,
+            ticker: state.editHoldingTicker.trim().toUpperCase(), quantity: state.editHoldingQty === '' ? null : (numVal(state.editHoldingQty) || 0), assetType: state.editHoldingAssetType
+          }) : h;
         }),
-        editingHoldingId: null, editHoldingName: '', editHoldingValue: '', editHoldingChange: ''
+        editingHoldingId: null, editHoldingName: '', editHoldingValue: '', editHoldingChange: '', editHoldingTicker: '', editHoldingQty: '', editHoldingAssetType: 'stock'
       });
     },
     toggleAddPortfolio: function () { update({ showAddPortfolio: !state.showAddPortfolio }); },
@@ -637,6 +670,85 @@
       update({
         portfolios: state.portfolios.filter(function (p) { return p.id !== id; }),
         portfolio: state.portfolio.filter(function (h) { return h.portfolioId !== id; })
+      });
+    },
+
+    saveMarketSymbols: function () {
+      var clean = state.marketSymbolsInput.split(',').map(function (s) { return s.trim(); }).filter(Boolean).join(',');
+      state.marketSymbols = clean || DEFAULT_MARKET_SYMBOLS;
+      save();
+      mountTickerTape(state.marketSymbols);
+    },
+
+    togglePriceSettings: function () { update({ showPriceSettings: !state.showPriceSettings, priceKeyInput: state.twelveDataApiKey }); },
+    savePriceKey: function () { update({ twelveDataApiKey: state.priceKeyInput.trim(), showPriceSettings: false }); },
+
+    refreshPrices: function () {
+      var trackable = state.portfolio.filter(function (h) { return h.ticker && h.quantity != null && h.assetType; });
+      if (!trackable.length) {
+        update({ priceRefreshStatus: 'Nessuna posizione con ticker e quantità impostati. Modifica una posizione per aggiungerli.' });
+        return;
+      }
+      update({ priceRefreshBusy: true, priceRefreshStatus: '' });
+
+      var cryptoHoldings = trackable.filter(function (h) { return h.assetType === 'crypto'; });
+      var stockHoldings = trackable.filter(function (h) { return h.assetType === 'stock'; });
+
+      var cryptoPromise = Promise.resolve({});
+      if (cryptoHoldings.length) {
+        var ids = [];
+        var idSeen = {};
+        cryptoHoldings.forEach(function (h) {
+          var id = CRYPTO_ID_MAP[h.ticker.toLowerCase()] || h.ticker.toLowerCase();
+          if (!idSeen[id]) { idSeen[id] = true; ids.push(id); }
+        });
+        cryptoPromise = fetch('https://api.coingecko.com/api/v3/simple/price?ids=' + encodeURIComponent(ids.join(',')) + '&vs_currencies=eur&include_24hr_change=true')
+          .then(function (r) { if (!r.ok) throw new Error('CoinGecko: ' + r.status); return r.json(); })
+          .then(function (data) {
+            var byTicker = {};
+            cryptoHoldings.forEach(function (h) {
+              var id = CRYPTO_ID_MAP[h.ticker.toLowerCase()] || h.ticker.toLowerCase();
+              if (data[id]) byTicker[h.id] = { price: data[id].eur, changePct: data[id].eur_24h_change };
+            });
+            return byTicker;
+          }).catch(function () { return {}; });
+      }
+
+      var stockPromise = Promise.resolve({});
+      if (stockHoldings.length) {
+        if (!state.twelveDataApiKey) {
+          stockPromise = Promise.resolve({ __missingKey: true });
+        } else {
+          var symbols = [];
+          var symSeen = {};
+          stockHoldings.forEach(function (h) { if (!symSeen[h.ticker]) { symSeen[h.ticker] = true; symbols.push(h.ticker); } });
+          stockPromise = fetch('https://api.twelvedata.com/quote?symbol=' + encodeURIComponent(symbols.join(',')) + '&apikey=' + encodeURIComponent(state.twelveDataApiKey))
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+              var byTicker = {};
+              stockHoldings.forEach(function (h) {
+                var q = symbols.length > 1 ? data[h.ticker] : data;
+                if (q && q.close && !q.code) byTicker[h.id] = { price: parseFloat(q.close), changePct: parseFloat(q.percent_change) };
+              });
+              return byTicker;
+            }).catch(function () { return {}; });
+        }
+      }
+
+      Promise.all([cryptoPromise, stockPromise]).then(function (results) {
+        var cryptoResults = results[0] || {};
+        var stockResults = results[1] || {};
+        var missingKey = !!stockResults.__missingKey;
+        var updatedCount = 0;
+        var portfolio = state.portfolio.map(function (h) {
+          var r = cryptoResults[h.id] || stockResults[h.id];
+          if (!r || r.price == null || isNaN(r.price)) return h;
+          updatedCount++;
+          return Object.assign({}, h, { value: r.price * h.quantity, changePct: isNaN(r.changePct) ? h.changePct : r.changePct });
+        });
+        var status = updatedCount + ' posizion' + (updatedCount === 1 ? 'e aggiornata' : 'i aggiornate') + ' su ' + trackable.length + '.';
+        if (missingKey) status += ' Per le azioni/ETF serve una chiave Twelve Data (vedi "Impostazioni prezzi").';
+        update({ portfolio: portfolio, priceRefreshBusy: false, priceRefreshStatus: status });
       });
     },
 
@@ -1291,16 +1403,22 @@
         if (s.editingHoldingId === h.id) {
           return '<div style="border:1px solid #E4E2DC;border-radius:12px;padding:14px 16px;display:flex;flex-direction:column;gap:8px;">' +
             '<input class="text-input" type="text" data-field="editHoldingName" value="' + esc(s.editHoldingName) + '" placeholder="Nome titolo">' +
-            '<div style="display:flex;gap:8px;">' +
+            '<div style="display:flex;gap:8px;flex-wrap:wrap;">' +
             '<input class="text-input" type="text" inputmode="decimal" data-field="editHoldingValue" value="' + esc(s.editHoldingValue) + '" placeholder="Valore" style="width:100px;">' +
             '<input class="text-input" type="text" inputmode="decimal" data-field="editHoldingChange" value="' + esc(s.editHoldingChange) + '" placeholder="Variazione %" style="width:100px;">' +
+            '</div>' +
+            '<div class="muted" style="font-size:11px;margin-top:2px;">Per l\'aggiornamento prezzi automatico (opzionale):</div>' +
+            '<div style="display:flex;gap:8px;flex-wrap:wrap;">' +
+            '<select class="text-input" data-field="editHoldingAssetType" style="width:110px;"><option value="stock"' + (s.editHoldingAssetType === 'stock' ? ' selected' : '') + '>Azione/ETF</option><option value="crypto"' + (s.editHoldingAssetType === 'crypto' ? ' selected' : '') + '>Crypto</option></select>' +
+            '<input class="text-input" type="text" data-field="editHoldingTicker" value="' + esc(s.editHoldingTicker) + '" placeholder="Ticker (es. AAPL, BTC)" style="width:130px;">' +
+            '<input class="text-input" type="text" inputmode="decimal" data-field="editHoldingQty" value="' + esc(s.editHoldingQty) + '" placeholder="Quantità" style="width:100px;">' +
             '</div>' +
             '<div style="display:flex;gap:8px;"><button class="btn btn-primary" data-action="save-edit-holding" data-id="' + h.id + '">Salva</button><button class="btn btn-ghost" data-action="cancel-edit-holding">Annulla</button></div>' +
             '</div>';
         }
         return '<div style="border:1px solid #E4E2DC;border-radius:12px;padding:14px 16px;display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">' +
           '<button data-action="start-edit-holding" data-id="' + h.id + '" style="background:none;border:none;cursor:pointer;padding:0;text-align:left;">' +
-          '<div style="font-size:14px;font-weight:600;color:#1E1D1B;">' + esc(h.name) + '</div><div style="font-size:17px;font-weight:600;margin-top:6px;font-family:\'Fraunces\',serif;color:#1E1D1B;">' + fmt(h.value) + '</div><div style="font-size:13px;font-weight:600;margin-top:2px;color:' + (changePct >= 0 ? ACCENT : NEGATIVE) + ';">' + changeFmt + '</div>' +
+          '<div style="font-size:14px;font-weight:600;color:#1E1D1B;">' + esc(h.name) + (h.ticker ? ' <span class="muted" style="font-weight:400;">' + esc(h.ticker) + '</span>' : '') + '</div><div style="font-size:17px;font-weight:600;margin-top:6px;font-family:\'Fraunces\',serif;color:#1E1D1B;">' + fmt(h.value) + '</div><div style="font-size:13px;font-weight:600;margin-top:2px;color:' + (changePct >= 0 ? ACCENT : NEGATIVE) + ';">' + changeFmt + '</div>' +
           '</button>' +
           '<button class="icon-btn" data-action="remove-holding" data-id="' + h.id + '" aria-label="Rimuovi posizione">' + xIcon() + '</button></div>';
       }).join('');
@@ -1313,12 +1431,20 @@
     var portfolioOptions = s.portfolios.map(function (p) { return '<option value="' + p.id + '"' + (String(s.newHoldingPortfolioId) === String(p.id) ? ' selected' : '') + '>' + esc(p.name) + '</option>'; }).join('');
 
     var addHoldingForm = s.showAddHolding ? (
-      '<div class="form-box">' +
+      '<div class="form-box" style="flex-direction:column;align-items:stretch;">' +
+      '<div style="display:flex;flex-wrap:wrap;gap:10px;">' +
       '<select class="text-input" data-field="newHoldingPortfolioId">' + portfolioOptions + '</select>' +
       '<input class="text-input" type="text" data-field="newHoldingName" value="' + esc(s.newHoldingName) + '" placeholder="Nome titolo" style="flex:1 1 160px;">' +
       '<input class="text-input" type="text" inputmode="decimal" data-field="newHoldingValue" value="' + esc(s.newHoldingValue) + '" placeholder="Valore attuale" style="width:120px;">' +
       '<input class="text-input" type="text" inputmode="decimal" data-field="newHoldingChange" value="' + esc(s.newHoldingChange) + '" placeholder="Variazione %" style="width:110px;">' +
-      '<button class="btn btn-dark" data-action="add-holding">Salva</button></div>'
+      '</div>' +
+      '<div class="muted" style="font-size:11px;margin-top:8px;">Per l\'aggiornamento prezzi automatico (opzionale):</div>' +
+      '<div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:4px;">' +
+      '<select class="text-input" data-field="newHoldingAssetType" style="width:110px;"><option value="stock"' + (s.newHoldingAssetType === 'stock' ? ' selected' : '') + '>Azione/ETF</option><option value="crypto"' + (s.newHoldingAssetType === 'crypto' ? ' selected' : '') + '>Crypto</option></select>' +
+      '<input class="text-input" type="text" data-field="newHoldingTicker" value="' + esc(s.newHoldingTicker) + '" placeholder="Ticker (es. AAPL, BTC)" style="width:140px;">' +
+      '<input class="text-input" type="text" inputmode="decimal" data-field="newHoldingQty" value="' + esc(s.newHoldingQty) + '" placeholder="Quantità" style="width:100px;">' +
+      '</div>' +
+      '<div style="margin-top:10px;"><button class="btn btn-dark" data-action="add-holding">Salva</button></div></div>'
     ) : '';
     var addPortfolioForm = s.showAddPortfolio ? (
       '<div class="form-box">' +
@@ -1326,10 +1452,69 @@
       '<button class="btn btn-dark" data-action="add-portfolio">Crea</button></div>'
     ) : '';
 
+    var priceSettingsBox = s.showPriceSettings ? (
+      '<div class="form-box" style="flex-direction:column;align-items:stretch;">' +
+      '<div class="muted" style="font-size:12px;">Le crypto si aggiornano gratis (CoinGecko, nessuna chiave). Per azioni/ETF serve una chiave gratuita da <a href="https://twelvedata.com/pricing" target="_blank" rel="noopener">twelvedata.com</a> (piano free, 1 minuto).</div>' +
+      '<div style="display:flex;gap:10px;flex-wrap:wrap;"><input class="text-input" type="password" data-field="priceKeyInput" value="' + esc(s.priceKeyInput) + '" placeholder="Chiave Twelve Data" style="flex:1 1 200px;"><button class="btn btn-dark" data-action="save-price-key">Salva</button></div>' +
+      '</div>'
+    ) : '';
+
+    var refreshRow = '<div class="row" style="flex-wrap:wrap;">' +
+      '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">' +
+      '<button class="btn btn-ghost" data-action="refresh-prices"' + (s.priceRefreshBusy ? ' disabled' : '') + '>' + (s.priceRefreshBusy ? 'Aggiorno...' : 'Aggiorna prezzi') + '</button>' +
+      '<button class="btn-link" data-action="toggle-price-settings">Impostazioni prezzi</button>' +
+      '</div></div>' +
+      (s.priceRefreshStatus ? '<div class="muted" style="font-size:12px;">' + esc(s.priceRefreshStatus) + '</div>' : '') +
+      priceSettingsBox;
+
     return '<div class="card"><div class="row"><div class="section-title">Portafogli</div><div style="font-size:13px;color:#6B6862;">Totale: <span style="font-weight:600;color:#1E1D1B;">' + fmt(totalPortfolio) + '</span></div></div>' +
+      refreshRow +
       sections +
       '<div style="display:flex;flex-wrap:wrap;gap:10px;"><button class="btn btn-primary" data-action="toggle" data-field="showAddHolding">+ Aggiungi posizione</button><button class="btn btn-ghost" data-action="toggle" data-field="showAddPortfolio">+ Nuovo portafoglio</button></div>' +
       addHoldingForm + addPortfolioForm + '</div>';
+  }
+
+  // ---------- markets section (rendered outside #app so it survives every re-render) ----------
+  function renderMarketsSection(s) {
+    return '<div style="width:100%;display:flex;justify-content:center;padding:0 14px 40px;">' +
+      '<div style="width:100%;max-width:720px;">' +
+      '<div class="card">' +
+      '<div class="section-title">Mercati</div>' +
+      '<div id="tv-ticker-tape"></div>' +
+      '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">' +
+      '<input class="text-input" type="text" data-field="marketSymbolsInput" value="' + esc(s.marketSymbolsInput) + '" placeholder="Simboli TradingView separati da virgola, es. NASDAQ:AAPL,BINANCE:BTCUSDT" style="flex:1 1 240px;">' +
+      '<button class="btn btn-ghost" data-action="save-market-symbols">Salva simboli</button>' +
+      '</div>' +
+      '</div></div></div>';
+  }
+
+  function mountTickerTape(symbolsStr) {
+    var container = document.getElementById('tv-ticker-tape');
+    if (!container) return;
+    container.innerHTML = '<div class="tradingview-widget-container"><div class="tradingview-widget-container__widget"></div></div>';
+    var symbols = symbolsStr.split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+    if (!symbols.length) return;
+    var config = {
+      symbols: symbols.map(function (s) { return { proName: s, title: s.indexOf(':') > -1 ? s.split(':')[1] : s }; }),
+      showSymbolLogo: true,
+      isTransparent: false,
+      displayMode: 'adaptive',
+      colorTheme: 'light',
+      locale: 'it'
+    };
+    var script = document.createElement('script');
+    script.type = 'text/javascript';
+    script.src = 'https://s3.tradingview.com/external-embedding/embed-widget-ticker-tape.js';
+    script.async = true;
+    script.textContent = JSON.stringify(config);
+    container.querySelector('.tradingview-widget-container').appendChild(script);
+  }
+
+  function renderMarkets() {
+    var el = document.getElementById('markets');
+    if (!el) return;
+    el.innerHTML = renderMarketsSection(state);
+    mountTickerTape(state.marketSymbols);
   }
 
   // ---------- focus-preserving render + event delegation ----------
@@ -1352,8 +1537,9 @@
 
   document.addEventListener('DOMContentLoaded', function () {
     render();
+    renderMarkets();
 
-    document.getElementById('app').addEventListener('click', function (e) {
+    document.addEventListener('click', function (e) {
       var el = e.target.closest('[data-action]');
       if (!el) return;
       var action = el.dataset.action;
@@ -1395,6 +1581,10 @@
         case 'export-csv': App.exportCSV(); break;
         case 'print-page': App.printPage(); break;
         case 'toggle-reset-confirm': App.toggleResetConfirm(); break;
+        case 'refresh-prices': App.refreshPrices(); break;
+        case 'toggle-price-settings': App.togglePriceSettings(); break;
+        case 'save-price-key': App.savePriceKey(); break;
+        case 'save-market-symbols': App.saveMarketSymbols(); break;
         case 'confirm-reset': App.confirmReset(); break;
         case 'toggle-import-row': App.toggleImportRow(Number(el.dataset.idx)); break;
         case 'remove-import-row': App.removeImportRow(Number(el.dataset.idx)); break;
@@ -1402,7 +1592,7 @@
       }
     });
 
-    document.getElementById('app').addEventListener('input', function (e) {
+    document.addEventListener('input', function (e) {
       var t = e.target;
       if (t.dataset && t.dataset.importField && t.tagName !== 'SELECT') {
         App.setImportField(Number(t.dataset.idx), t.dataset.importField, t.value);
@@ -1410,7 +1600,7 @@
       }
       if (t.dataset && t.dataset.field && t.type !== 'checkbox') App.setField(t.dataset.field, t.value);
     });
-    document.getElementById('app').addEventListener('change', function (e) {
+    document.addEventListener('change', function (e) {
       var t = e.target;
       if (t.type === 'checkbox' && t.dataset) {
         if (t.dataset.action === 'toggle-exclude') {
