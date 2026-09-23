@@ -38,7 +38,11 @@
     ['Vendite online', 'cart'], ['Investimenti', 'moneybag'], ['Altro', '']
   ], 'i');
 
-  var RECUR_LABELS = { monthly: 'Ogni mese', quarterly: 'Ogni 3 mesi', semiannual: 'Ogni 6 mesi' };
+  var RECUR_LABELS = {
+    daily: 'Ogni giorno', weekly: 'Ogni settimana', monthly: 'Ogni mese', quarterly: 'Ogni 3 mesi',
+    semiannual: 'Ogni 6 mesi', yearly: 'Ogni anno', custom: 'Personalizzato'
+  };
+  var CUSTOM_UNIT_LABELS = { days: 'giorni', weeks: 'settimane', months: 'mesi' };
 
   var PERSIST_KEYS = ['accounts', 'debts', 'upcoming', 'portfolio', 'portfolios', 'transactions', 'goal', 'expenseCategories', 'incomeCategories', 'twelveDataApiKey'];
 
@@ -82,6 +86,7 @@
 
       showAddPayment: false, newPaymentLabel: '', newPaymentAmount: '', newPaymentDate: '',
       newPaymentCategory: '', newPaymentRecurrence: 'none',
+      newPaymentAccountId: '', newPaymentTime: '', newPaymentEndDate: '', newPaymentCustomValue: '1', newPaymentCustomUnit: 'months',
 
       showAddHolding: false, newHoldingName: '', newHoldingValue: '', newHoldingChange: '', newHoldingPortfolioId: '1',
       newHoldingTicker: '', newHoldingQty: '', newHoldingAssetType: 'stock',
@@ -748,8 +753,16 @@
     addPayment: function () {
       if (!state.newPaymentLabel || state.newPaymentAmount === '' || !state.newPaymentDate) return;
       update({
-        upcoming: state.upcoming.concat([{ id: uid(), label: state.newPaymentLabel, amount: numVal(state.newPaymentAmount) || 0, date: state.newPaymentDate, category: state.newPaymentCategory, recurrence: state.newPaymentRecurrence }]),
-        newPaymentLabel: '', newPaymentAmount: '', newPaymentDate: '', newPaymentCategory: '', newPaymentRecurrence: 'none', showAddPayment: false
+        upcoming: state.upcoming.concat([{
+          id: uid(), label: state.newPaymentLabel, amount: numVal(state.newPaymentAmount) || 0, date: state.newPaymentDate,
+          category: state.newPaymentCategory, recurrence: state.newPaymentRecurrence,
+          accountId: state.newPaymentAccountId ? Number(state.newPaymentAccountId) : null,
+          time: state.newPaymentTime, endDate: state.newPaymentEndDate,
+          customValue: state.newPaymentCustomValue, customUnit: state.newPaymentCustomUnit
+        }]),
+        newPaymentLabel: '', newPaymentAmount: '', newPaymentDate: '', newPaymentCategory: '', newPaymentRecurrence: 'none',
+        newPaymentAccountId: '', newPaymentTime: '', newPaymentEndDate: '', newPaymentCustomValue: '1', newPaymentCustomUnit: 'months',
+        showAddPayment: false
       });
     },
     removeUpcoming: function (id) { update({ upcoming: state.upcoming.filter(function (u) { return u.id !== id; }) }); },
@@ -1297,9 +1310,9 @@
     var maxBar = Math.max(periodIncome, periodExpense, 1);
 
     var urgentDays = s.upcoming.map(function (u) {
-      var eff = nextOccurrence(u.date, u.recurrence, startOfDay);
-      return { u: u, eff: eff, days: Math.ceil((eff - startOfDay) / 86400000) };
-    });
+      var eff = nextOccurrence(u, startOfDay);
+      return eff ? { u: u, eff: eff, days: Math.ceil((eff - startOfDay) / 86400000) } : null;
+    }).filter(Boolean);
     var urgent = urgentDays.filter(function (x) { return x.days <= 7; });
     var urgentTotal = urgent.reduce(function (sum, x) { return sum + Number(x.u.amount || 0); }, 0);
 
@@ -1356,12 +1369,36 @@
       '</div>';
   }
 
-  function nextOccurrence(dateStr, recurrence, startOfDay) {
-    var d = new Date(dateStr);
-    var stepMonths = recurrence === 'monthly' ? 1 : recurrence === 'quarterly' ? 3 : recurrence === 'semiannual' ? 6 : 0;
-    if (!stepMonths) return d;
+  function advanceDate(d, recurrence, customValue, customUnit) {
+    if (recurrence === 'daily') return new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1);
+    if (recurrence === 'weekly') return new Date(d.getFullYear(), d.getMonth(), d.getDate() + 7);
+    if (recurrence === 'monthly') return new Date(d.getFullYear(), d.getMonth() + 1, d.getDate());
+    if (recurrence === 'quarterly') return new Date(d.getFullYear(), d.getMonth() + 3, d.getDate());
+    if (recurrence === 'semiannual') return new Date(d.getFullYear(), d.getMonth() + 6, d.getDate());
+    if (recurrence === 'yearly') return new Date(d.getFullYear() + 1, d.getMonth(), d.getDate());
+    if (recurrence === 'custom') {
+      var n = Math.max(1, parseInt(customValue, 10) || 1);
+      if (customUnit === 'days') return new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
+      if (customUnit === 'weeks') return new Date(d.getFullYear(), d.getMonth(), d.getDate() + n * 7);
+      return new Date(d.getFullYear(), d.getMonth() + n, d.getDate());
+    }
+    return null;
+  }
+
+  function nextOccurrence(u, startOfDay) {
+    var d = new Date(u.date);
+    var recurrence = u.recurrence || 'none';
+    if (recurrence === 'none' || recurrence === '') return d;
+    var endDate = u.endDate ? new Date(u.endDate + 'T23:59:59') : null;
     var guard = 0;
-    while (d < startOfDay && guard < 240) { d = new Date(d.getFullYear(), d.getMonth() + stepMonths, d.getDate()); guard++; }
+    while (d < startOfDay && guard < 3000) {
+      var next = advanceDate(d, recurrence, u.customValue, u.customUnit);
+      if (!next) break;
+      d = next;
+      guard++;
+      if (endDate && d > endDate) return null;
+    }
+    if (endDate && d > endDate) return null;
     return d;
   }
 
@@ -1720,10 +1757,17 @@
       var u = x.u, days = x.days;
       var isUrgent = days <= 7;
       var meta = u.category ? catMeta(s.expenseCategories, u.category) : null;
+      var acc = u.accountId ? s.accounts.find(function (a) { return a.id === u.accountId; }) : null;
+      var recurLabel = RECUR_LABELS[u.recurrence] ? (u.recurrence === 'custom' ? 'Ogni ' + (u.customValue || 1) + ' ' + (CUSTOM_UNIT_LABELS[u.customUnit] || 'mesi') : RECUR_LABELS[u.recurrence]) : '';
+      var subtitleParts = [fmtDate(x.eff)];
+      if (u.time) subtitleParts.push(u.time);
+      if (acc) subtitleParts.push(esc(acc.name));
+      if (recurLabel) subtitleParts.push('↻ ' + recurLabel);
+      if (u.endDate) subtitleParts.push('fino al ' + fmtDate(u.endDate));
       return '<div class="list-row"><div style="display:flex;align-items:center;gap:10px;">' +
         '<span class="badge" style="background:' + (isUrgent ? 'rgba(179,65,58,0.1)' : 'rgba(31,111,92,0.1)') + ';color:' + (isUrgent ? NEGATIVE : ACCENT) + ';">' + (days < 0 ? 'Scaduto' : (days === 0 ? 'Oggi' : days + ' g')) + '</span>' +
         (meta ? avatarHtml(meta, 26) : '') +
-        '<div><div style="font-size:14px;font-weight:500;">' + esc(u.label) + '</div><div class="muted" style="font-size:12px;">' + fmtDate(x.eff) + (RECUR_LABELS[u.recurrence] ? ' &middot; ↻ ' + RECUR_LABELS[u.recurrence] : '') + '</div></div></div>' +
+        '<div><div style="font-size:14px;font-weight:500;">' + esc(u.label) + '</div><div class="muted" style="font-size:12px;">' + subtitleParts.join(' &middot; ') + '</div></div></div>' +
         '<div style="display:flex;align-items:center;gap:12px;"><div style="font-size:14px;font-weight:600;">' + fmt(u.amount) + '</div><button class="icon-btn" data-action="remove-upcoming" data-id="' + u.id + '" aria-label="Rimuovi pagamento">' + xIcon() + '</button></div></div>';
     }).join('');
 
@@ -1736,15 +1780,38 @@
         '</div><span style="font-size:10px;color:' + (selected ? '#1E1D1B' : '#6B6862') + ';text-align:center;max-width:60px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + esc(c.name) + '</span></button>';
     }).join('');
 
+    var accountOptions = '<option value="">Nessun conto</option>' + s.accounts.map(function (a) { return '<option value="' + a.id + '"' + (String(s.newPaymentAccountId) === String(a.id) ? ' selected' : '') + '>' + esc(a.name) + '</option>'; }).join('');
+
+    var recurrenceOptions = [
+      ['none', 'Non ricorrente'], ['daily', 'Ogni giorno'], ['weekly', 'Ogni settimana'], ['monthly', 'Ogni mese'],
+      ['quarterly', 'Ogni 3 mesi'], ['semiannual', 'Ogni 6 mesi'], ['yearly', 'Ogni anno'], ['custom', 'Personalizzato...']
+    ].map(function (pair) { return '<option value="' + pair[0] + '"' + (s.newPaymentRecurrence === pair[0] ? ' selected' : '') + '>' + pair[1] + '</option>'; }).join('');
+
+    var customRow = s.newPaymentRecurrence === 'custom' ? (
+      '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;"><span class="muted" style="font-size:13px;">Ogni</span>' +
+      '<input class="text-input" type="text" inputmode="decimal" data-field="newPaymentCustomValue" value="' + esc(s.newPaymentCustomValue) + '" style="width:70px;">' +
+      '<select class="text-input" data-field="newPaymentCustomUnit"><option value="days"' + (s.newPaymentCustomUnit === 'days' ? ' selected' : '') + '>Giorni</option><option value="weeks"' + (s.newPaymentCustomUnit === 'weeks' ? ' selected' : '') + '>Settimane</option><option value="months"' + (s.newPaymentCustomUnit === 'months' ? ' selected' : '') + '>Mesi</option></select></div>'
+    ) : '';
+
+    var endDateRow = s.newPaymentRecurrence !== 'none' ? (
+      '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;"><span class="muted" style="font-size:13px;">Fino al (opzionale)</span><input class="text-input" type="date" data-field="newPaymentEndDate" value="' + esc(s.newPaymentEndDate) + '"></div>'
+    ) : '';
+
     var addForm = s.showAddPayment ? (
       '<div class="form-box" style="flex-direction:column;align-items:stretch;">' +
       '<div style="display:flex;flex-wrap:wrap;gap:10px;">' +
       '<input class="text-input" type="text" data-field="newPaymentLabel" value="' + esc(s.newPaymentLabel) + '" placeholder="Descrizione" style="flex:1 1 160px;">' +
       '<input class="text-input" type="text" inputmode="decimal" data-field="newPaymentAmount" value="' + esc(s.newPaymentAmount) + '" placeholder="Importo" style="width:110px;">' +
       '<input class="text-input" type="date" data-field="newPaymentDate" value="' + esc(s.newPaymentDate) + '">' +
-      '<select class="text-input" data-field="newPaymentRecurrence"><option value="none"' + (s.newPaymentRecurrence === 'none' ? ' selected' : '') + '>Non ricorrente</option><option value="monthly"' + (s.newPaymentRecurrence === 'monthly' ? ' selected' : '') + '>Ogni mese</option><option value="quarterly"' + (s.newPaymentRecurrence === 'quarterly' ? ' selected' : '') + '>Ogni 3 mesi</option><option value="semiannual"' + (s.newPaymentRecurrence === 'semiannual' ? ' selected' : '') + '>Ogni 6 mesi</option></select>' +
-      '</div><div><div class="muted" style="font-size:12px;margin-bottom:8px;">' + (s.newPaymentCategory ? 'Categoria: ' + esc(s.newPaymentCategory) : 'Categoria (opzionale)') + '</div><div style="display:flex;flex-wrap:wrap;gap:10px;">' + catGrid + '</div></div>' +
-      '<div><button class="btn btn-dark" data-action="add-payment">Salva</button></div></div>'
+      '<input class="text-input" type="time" data-field="newPaymentTime" value="' + esc(s.newPaymentTime) + '" style="width:110px;">' +
+      '<select class="text-input" data-field="newPaymentAccountId" style="width:fit-content;">' + accountOptions + '</select>' +
+      '</div>' +
+      '<div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:10px;">' +
+      '<select class="text-input" data-field="newPaymentRecurrence">' + recurrenceOptions + '</select>' +
+      '</div>' +
+      customRow + endDateRow +
+      '<div style="margin-top:10px;"><div class="muted" style="font-size:12px;margin-bottom:8px;">' + (s.newPaymentCategory ? 'Categoria: ' + esc(s.newPaymentCategory) : 'Categoria (opzionale)') + '</div><div style="display:flex;flex-wrap:wrap;gap:10px;">' + catGrid + '</div></div>' +
+      '<div style="margin-top:10px;"><button class="btn btn-dark" data-action="add-payment">Salva</button></div></div>'
     ) : '';
 
     return '<div class="card"><div class="section-title">Pagamenti futuri</div><div style="display:flex;flex-direction:column;gap:2px;">' + (rows || '<div class="muted" style="font-size:13px;">Nessun pagamento in programma.</div>') + '</div>' +
