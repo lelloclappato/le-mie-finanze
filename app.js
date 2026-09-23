@@ -47,7 +47,7 @@
     ['Vendite online', 'cart'], ['Investimenti', 'moneybag'], ['Vendita titoli', ''], ['Giroconti', ''], ['Altro', '']
   ], 'i').map(function (c) { if (isNeutralDefaultName(c.name, 'entrata')) c.neutral = true; return c; });
 
-  var APP_VERSION = '2.0';
+  var APP_VERSION = '2.1';
   var DATA_VERSION = 2;
   var BACKUP_REMINDER_DAYS = 30;
 

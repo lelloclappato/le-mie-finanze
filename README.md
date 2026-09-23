@@ -20,7 +20,7 @@ Per lo stesso motivo: se disinstalli l'app o cancelli i dati del browser, i dati
 
 ## Pubblicare un aggiornamento
 
-Quando modifichi il codice, aumenta `CACHE_NAME` in `sw.js` (es. `v2` → `v3`): così i telefoni scaricano la nuova versione e l'app mostra "Aggiorna".
+Basta caricare i file modificati su GitHub: dopo 1–2 minuti (il tempo che GitHub Pages pubblica) l'app sul telefono usa la nuova versione alla prima apertura con internet. Offline usa l'ultima versione salvata. Se modifichi `sw.js`, cambia anche il suo `CACHE_NAME` (es. `v3` → `v4`). Il numero di versione visibile in fondo alla pagina è `APP_VERSION` in `app.js`.
 
 ## Come installarla sul telefono
 

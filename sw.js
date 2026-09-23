@@ -1,5 +1,8 @@
-// IMPORTANTE: aumenta questo numero a ogni rilascio, così i telefoni scaricano la nuova versione.
-const CACHE_NAME = 'le-mie-finanze-v2';
+// Service worker di Le Mie Finanze.
+// Strategia: i file dell'app arrivano SEMPRE dalla rete quando c'è connessione (così ogni
+// modifica pubblicata su GitHub compare alla prima apertura), la cache serve solo offline.
+// Il numero va cambiato solo quando si modifica questo file.
+const CACHE_NAME = 'le-mie-finanze-v3';
 const ASSETS = [
   './',
   './index.html',
@@ -10,13 +13,17 @@ const ASSETS = [
   './icons/icon-512.png'
 ];
 
-// Domini esterni che conviene tenere in cache per l'uso offline
-// (librerie per leggere Excel/PDF e font). Le API dei prezzi NON vanno mai in cache.
+// Librerie (Excel/PDF) e font: URL con versione fissa, si possono prendere dalla cache.
+// Le API dei prezzi NON passano mai dalla cache.
 const CACHEABLE_HOSTS = ['cdn.jsdelivr.net', 'fonts.googleapis.com', 'fonts.gstatic.com'];
+const NETWORK_TIMEOUT_MS = 4000;
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(ASSETS)).then(() => self.skipWaiting())
+    caches.open(CACHE_NAME)
+      // cache: 'reload' salta la cache HTTP del browser (GitHub Pages la tiene 10 minuti)
+      .then((cache) => cache.addAll(ASSETS.map((u) => new Request(u, { cache: 'reload' }))))
+      .then(() => self.skipWaiting())
   );
 });
 
@@ -28,23 +35,35 @@ self.addEventListener('activate', (event) => {
   );
 });
 
+function putInCache(request, response) {
+  if (response && response.status === 200) {
+    const copy = response.clone();
+    caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
+  }
+  return response;
+}
+
+// Prima la rete (senza cache HTTP), poi la cache se offline o se la rete è troppo lenta.
+function networkFirst(request) {
+  const network = fetch(request, { cache: 'no-cache' }).then((res) => putInCache(request, res));
+  const timeout = new Promise((resolve) => setTimeout(resolve, NETWORK_TIMEOUT_MS));
+  const fromCache = () => caches.match(request, { ignoreSearch: true });
+  return Promise.race([network, timeout.then(() => null)])
+    .then((res) => res || fromCache().then((cached) => cached || network))
+    .catch(() => fromCache().then((cached) => cached || Response.error()));
+}
+
+function cacheFirst(request) {
+  return caches.match(request).then((cached) => cached || fetch(request).then((res) => putInCache(request, res)));
+}
+
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
   const url = new URL(event.request.url);
-  const sameOrigin = url.origin === self.location.origin;
-  if (!sameOrigin && CACHEABLE_HOSTS.indexOf(url.hostname) === -1) return; // es. prezzi: sempre dalla rete
-
-  // Stale-while-revalidate: risponde subito dalla cache e aggiorna in background.
-  event.respondWith(
-    caches.match(event.request).then((cached) => {
-      const network = fetch(event.request).then((response) => {
-        if (response && response.status === 200) {
-          const copy = response.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
-        }
-        return response;
-      }).catch(() => cached);
-      return cached || network;
-    })
-  );
+  if (url.origin === self.location.origin) {
+    event.respondWith(networkFirst(event.request));
+  } else if (CACHEABLE_HOSTS.indexOf(url.hostname) > -1) {
+    event.respondWith(cacheFirst(event.request));
+  }
+  // tutto il resto (es. prezzi) va direttamente in rete
 });
