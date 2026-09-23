@@ -74,9 +74,13 @@
       showImport: false, importBusy: false, importError: '', importSuccess: '', importRows: [],
       showCreateCat: false, managingCategories: false,
       newCatName: '', newCatColor: CATEGORY_PALETTE[0], newCatIcon: '',
-      editingCatId: null, editingCatType: null
+      editingCatId: null, editingCatType: null,
+
+      showResetConfirm: false, resetCodeInput: '', resetError: ''
     };
   }
+
+  var RESET_CODE = '20831';
 
   var state = defaultState();
 
@@ -711,6 +715,20 @@
     },
     printPage: function () { try { window.print(); } catch (e) {} },
 
+    toggleResetConfirm: function () { update({ showResetConfirm: !state.showResetConfirm, resetCodeInput: '', resetError: '' }); },
+    confirmReset: function () {
+      if (state.resetCodeInput !== RESET_CODE) {
+        state.resetError = 'Codice errato.';
+        renderPreserveFocus();
+        return;
+      }
+      var fresh = defaultState();
+      Object.keys(state).forEach(function (k) { delete state[k]; });
+      Object.assign(state, fresh);
+      save();
+      render();
+    },
+
     handleImportFile: function (file) {
       if (!file) return;
       update({ importBusy: true, importError: '', importSuccess: '', importRows: [] });
@@ -879,9 +897,26 @@
     html += renderUpcoming(s, urgentDays, startOfDay);
     html += renderPortfolios(s, totalPortfolio);
     html += '<div style="text-align:center;font-size:12px;color:#A6A39B;padding-top:8px;">I dati vengono salvati sul tuo dispositivo (localStorage), non lasciano il telefono.</div>';
+    html += renderResetPanel(s);
     html += '</div></div>';
 
     document.getElementById('app').innerHTML = html;
+  }
+
+  function renderResetPanel(s) {
+    if (!s.showResetConfirm) {
+      return '<div style="text-align:center;padding-top:4px;"><button class="btn-link" data-action="toggle-reset-confirm" style="color:' + NEGATIVE + ';">Reimposta tutti i dati</button></div>';
+    }
+    return '<div style="border:1px solid ' + NEGATIVE + ';border-radius:12px;padding:16px;display:flex;flex-direction:column;gap:10px;">' +
+      '<div style="font-size:13px;font-weight:600;color:' + NEGATIVE + ';">Questo cancella conti, movimenti, debiti, pagamenti futuri e portafogli. Non si può annullare.</div>' +
+      '<div class="muted" style="font-size:12px;">Per confermare inserisci il codice di sicurezza.</div>' +
+      '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">' +
+      '<input class="text-input" type="password" inputmode="numeric" data-field="resetCodeInput" value="' + esc(s.resetCodeInput) + '" placeholder="Codice" style="width:120px;">' +
+      '<button class="btn btn-dark" style="background:' + NEGATIVE + ';" data-action="confirm-reset">Cancella tutto</button>' +
+      '<button class="btn btn-ghost" data-action="toggle-reset-confirm">Annulla</button>' +
+      '</div>' +
+      (s.resetError ? '<div style="color:' + NEGATIVE + ';font-size:12px;">' + esc(s.resetError) + '</div>' : '') +
+      '</div>';
   }
 
   function nextOccurrence(dateStr, recurrence, startOfDay) {
@@ -1359,6 +1394,8 @@
         case 'remove-category': App.deleteCategory(el.dataset.id, el.dataset.cattype); break;
         case 'export-csv': App.exportCSV(); break;
         case 'print-page': App.printPage(); break;
+        case 'toggle-reset-confirm': App.toggleResetConfirm(); break;
+        case 'confirm-reset': App.confirmReset(); break;
         case 'toggle-import-row': App.toggleImportRow(Number(el.dataset.idx)); break;
         case 'remove-import-row': App.removeImportRow(Number(el.dataset.idx)); break;
         case 'confirm-import': App.confirmImport(); break;
