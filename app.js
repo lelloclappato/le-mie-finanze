@@ -2,9 +2,40 @@
   'use strict';
 
   var STORAGE_KEY = 'finanze-personali-data';
-  var ACCENT = '#1F6F5C';
-  var NEGATIVE = '#B3413A';
-  var WARN = '#B08900';
+  var ACCENT = 'var(--accent)';
+  var NEGATIVE = 'var(--negative)';
+  var WARN = 'var(--warn)';
+  // Sfondo dell'header: separato da ACCENT perché nel tema scuro il verde acceso usato per
+  // bottoni/link non ha abbastanza contrasto con il testo chiaro se diventa uno sfondo pieno.
+  var HEADER_BG = 'var(--header-bg)';
+
+  // ---------- tema ----------
+  // Chiave separata (non nel blob principale) così lo script anti-flash in index.html
+  // può leggerla in modo sincrono, prima ancora che app.js venga caricato.
+  var THEME_KEY = 'finanze-tema';
+  var THEMES = [
+    { id: 'verde', label: 'Verde', swatch: ['#F6F5F2', '#1F6F5C'] },
+    { id: 'blu', label: 'Blu notte', swatch: ['#F2F5F8', '#1A5DA6'] },
+    { id: 'scuro', label: 'Scuro', swatch: ['#16191A', '#33A382'] },
+    { id: 'minimal', label: 'Minimal', swatch: ['#FAFAF9', '#3B5B52'] }
+  ];
+  function systemPrefersDark() {
+    try { return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches; } catch (e) { return false; }
+  }
+  function getThemePref() {
+    try { return window.localStorage.getItem(THEME_KEY) || 'auto'; } catch (e) { return 'auto'; }
+  }
+  function resolveTheme(pref) {
+    if (THEMES.some(function (t) { return t.id === pref; })) return pref;
+    return systemPrefersDark() ? 'scuro' : 'verde';
+  }
+  function applyTheme(pref) {
+    try { document.documentElement.setAttribute('data-theme', resolveTheme(pref)); } catch (e) {}
+  }
+  function setThemePref(pref) {
+    try { window.localStorage.setItem(THEME_KEY, pref); } catch (e) {}
+    applyTheme(pref);
+  }
 
   var CATEGORY_PALETTE = ['#B3413A', '#1F6F5C', '#C97C3D', '#6B5CA5', '#3B6EA5', '#B5548B', '#5B8C3A', '#B08900', '#6B6862', '#2F4F4F'];
 
@@ -47,7 +78,7 @@
     ['Vendite online', 'cart'], ['Investimenti', 'moneybag'], ['Vendita titoli', ''], ['Giroconti', ''], ['Altro', '']
   ], 'i').map(function (c) { if (isNeutralDefaultName(c.name, 'entrata')) c.neutral = true; return c; });
 
-  var APP_VERSION = '2.1';
+  var APP_VERSION = '2.2';
   var DATA_VERSION = 2;
   var BACKUP_REMINDER_DAYS = 30;
 
@@ -91,6 +122,7 @@
       expenseCategories: DEFAULT_EXPENSE_CATEGORIES,
       incomeCategories: DEFAULT_INCOME_CATEGORIES,
       history: [], transferLog: [], lastBackupAt: null, dataVersion: DATA_VERSION,
+      themePref: getThemePref(),
       alphaVantageApiKey: '', avKeyInput: '',
       monthViewKey: '', showBudgets: false, showAddHistory: false, newHistoryMonth: '', newHistoryValue: '',
       updateReady: false,
@@ -150,6 +182,7 @@
     migrate();
     save();
   })();
+  applyTheme(state.themePref); // lo script in index.html lo fa già prima del disegno; questo copre i casi in cui manca
 
   // Aggiorna i dati salvati con versioni precedenti dell'app.
   function migrate() {
@@ -1345,6 +1378,11 @@
     },
 
     toggleResetConfirm: function () { update({ showResetConfirm: !state.showResetConfirm, resetCodeInput: '', resetError: '' }); },
+    pickTheme: function (pref) {
+      pref = (pref === 'auto' || THEMES.some(function (t) { return t.id === pref; })) ? pref : 'auto';
+      setThemePref(pref);
+      update({ themePref: pref });
+    },
     confirmReset: function () {
       if (state.resetCodeInput !== RESET_CODE) {
         state.resetError = 'Codice errato.';
@@ -1556,7 +1594,8 @@
     html += renderDebts(s);
     html += renderUpcoming(s, urgentDays, startOfDay);
     html += renderPortfolios(s, totalPortfolio);
-    html += '<div style="text-align:center;font-size:12px;color:#A6A39B;padding-top:8px;">I dati vengono salvati sul tuo dispositivo (localStorage), non lasciano il telefono. &middot; v' + APP_VERSION + '</div>';
+    html += '<div style="text-align:center;font-size:12px;color:var(--faint);padding-top:8px;">I dati vengono salvati sul tuo dispositivo (localStorage), non lasciano il telefono. &middot; v' + APP_VERSION + '</div>';
+    html += renderThemePanel(s);
     html += renderBackupPanel(s);
     html += renderResetPanel(s);
     html += '</div></div>';
@@ -1571,7 +1610,7 @@
     var days = daysSince(s.lastBackupAt);
     if (days !== null && days < BACKUP_REMINDER_DAYS) return '';
     var msg = days === null ? 'Non hai ancora fatto un backup: i dati esistono solo su questo telefono.' : 'L\'ultimo backup è di ' + days + ' giorni fa.';
-    return '<div class="card" style="flex-direction:row;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;padding:14px 16px;border-color:rgba(176,137,0,0.4);background:#FFFBEF;">' +
+    return '<div class="card" style="flex-direction:row;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;padding:14px 16px;border-color:rgba(var(--warn-rgb),0.4);background:rgba(var(--warn-rgb),0.08);">' +
       '<div style="font-size:13px;"><strong>Backup</strong> &middot; ' + msg + '</div>' +
       '<button class="btn btn-dark" data-action="export-backup">Esporta ora</button></div>';
   }
@@ -1580,6 +1619,30 @@
     return '<div class="card" style="flex-direction:row;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;padding:12px 16px;">' +
       '<div style="font-size:13px;">È disponibile una nuova versione dell\'app.</div>' +
       '<button class="btn btn-primary" data-action="reload-app">Aggiorna</button></div>';
+  }
+
+  function themeSwatchSvg(bg, accent) {
+    return '<svg viewBox="0 0 34 34" width="34" height="34">' +
+      '<path d="M17,1 A16,16 0 0,0 17,33 Z" fill="' + bg + '"/>' +
+      '<path d="M17,1 A16,16 0 0,1 17,33 Z" fill="' + accent + '"/>' +
+      '<circle cx="17" cy="17" r="15.25" fill="none" stroke="rgba(0,0,0,0.15)" stroke-width="1.5"/></svg>';
+  }
+  function renderThemePanel(s) {
+    var current = s.themePref || 'auto';
+    var chosen = THEMES.filter(function (t) { return t.id === current; })[0];
+    var label = chosen ? chosen.label : 'Auto — segue il tema del telefono';
+    var btn = function (id, title, bg, accent) {
+      var active = current === id;
+      return '<button type="button" class="theme-swatch" data-action="pick-theme" data-theme="' + id + '" title="' + esc(title) + '" ' +
+        'style="border:' + (active ? '2px solid var(--accent)' : '2px solid transparent') + ';">' + themeSwatchSvg(bg, accent) + '</button>';
+    };
+    var buttons = btn('auto', 'Auto (segue il telefono)', '#F6F5F2', '#16191A') +
+      THEMES.map(function (t) { return btn(t.id, t.label, t.swatch[0], t.swatch[1]); }).join('');
+    return '<div class="card">' +
+      '<div class="section-title">Aspetto</div>' +
+      '<div class="muted" style="font-size:12px;">' + esc(label) + '</div>' +
+      '<div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center;">' + buttons + '</div>' +
+      '</div>';
   }
 
   function renderBackupPanel(s) {
@@ -1654,40 +1717,40 @@
 
   function renderHeader(s, netWorth, totalAccounts, totalPortfolio, totalDebt, totalCredit, urgentCount, urgentTotal, goalPct) {
     var stat = function (label, value) {
-      return '<div><div style="font-size:12px;color:rgba(250,250,248,0.65);">' + label + '</div><div style="font-size:18px;font-weight:600;margin-top:2px;">' + value + '</div></div>';
+      return '<div><div style="font-size:12px;color:rgba(var(--header-fg-rgb),0.65);">' + label + '</div><div style="font-size:18px;font-weight:600;margin-top:2px;">' + value + '</div></div>';
     };
     var goalEdit = s.editGoal
       ? '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">' +
-        '<input class="text-input" type="text" inputmode="decimal" data-field="goalCurrentInput" value="' + esc(s.goalCurrentInput) + '" placeholder="Attuale" style="width:110px;background:rgba(250,250,248,0.95);">' +
-        '<span style="color:rgba(250,250,248,0.7);">di</span>' +
-        '<input class="text-input" type="text" inputmode="decimal" data-field="goalTargetInput" value="' + esc(s.goalTargetInput) + '" placeholder="Obiettivo" style="width:110px;background:rgba(250,250,248,0.95);">' +
-        '<button class="btn" data-action="save-goal" style="background:#FAFAF8;color:#1F6F5C;">Salva</button>' +
+        '<input class="text-input" type="text" inputmode="decimal" data-field="goalCurrentInput" value="' + esc(s.goalCurrentInput) + '" placeholder="Attuale" style="width:110px;background:var(--surface);">' +
+        '<span style="color:rgba(var(--header-fg-rgb),0.7);">di</span>' +
+        '<input class="text-input" type="text" inputmode="decimal" data-field="goalTargetInput" value="' + esc(s.goalTargetInput) + '" placeholder="Obiettivo" style="width:110px;background:var(--surface);">' +
+        '<button class="btn" data-action="save-goal" style="background:var(--surface);color:var(--accent);">Salva</button>' +
         '</div>'
       : '';
     return (
-      '<div style="background:' + ACCENT + ';border-radius:16px;padding:26px 20px;color:#FAFAF8;display:flex;flex-direction:column;gap:22px;">' +
+      '<div style="background:' + HEADER_BG + ';border-radius:16px;padding:26px 20px;color:var(--header-fg);display:flex;flex-direction:column;gap:22px;">' +
         '<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:16px;">' +
-          '<div><h1 style="font-size:26px;font-weight:600;color:#FAFAF8;">Le Mie Finanze</h1><div style="font-size:14px;color:rgba(250,250,248,0.75);margin-top:4px;">Panoramica personale</div></div>' +
-          '<div style="text-align:right;"><div style="font-size:12px;color:rgba(250,250,248,0.75);text-transform:uppercase;letter-spacing:0.04em;">Patrimonio netto</div><div style="font-size:32px;font-family:\'Fraunces\',serif;font-weight:600;">' + fmt(netWorth) + '</div></div>' +
+          '<div><h1 style="font-size:26px;font-weight:600;color:var(--header-fg);">Le Mie Finanze</h1><div style="font-size:14px;color:rgba(var(--header-fg-rgb),0.75);margin-top:4px;">Panoramica personale</div></div>' +
+          '<div style="text-align:right;"><div style="font-size:12px;color:rgba(var(--header-fg-rgb),0.75);text-transform:uppercase;letter-spacing:0.04em;">Patrimonio netto</div><div style="font-size:32px;font-family:\'Fraunces\',serif;font-weight:600;">' + fmt(netWorth) + '</div></div>' +
         '</div>' +
-        '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:14px;padding-top:8px;border-top:1px solid rgba(250,250,248,0.2);">' +
+        '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:14px;padding-top:8px;border-top:1px solid rgba(var(--header-fg-rgb),0.2);">' +
           stat('Conti correnti', fmt(totalAccounts)) + stat('Portafoglio', fmt(totalPortfolio)) + stat('Devo', fmt(totalDebt)) + stat('Mi devono', fmt(totalCredit)) + stat('Scadenze 7gg', urgentCount + ' &middot; ' + fmt(urgentTotal)) +
         '</div>' +
-        '<div style="background:rgba(250,250,248,0.08);border-radius:12px;padding:16px 18px;display:flex;flex-direction:column;gap:10px;">' +
-          '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;"><div style="font-size:14px;font-weight:600;">Obiettivo: ' + esc(s.goal.label) + '</div><button class="btn-link" data-action="toggle-edit-goal" style="color:rgba(250,250,248,0.8);">Modifica</button></div>' +
+        '<div style="background:rgba(var(--header-fg-rgb),0.08);border-radius:12px;padding:16px 18px;display:flex;flex-direction:column;gap:10px;">' +
+          '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;"><div style="font-size:14px;font-weight:600;">Obiettivo: ' + esc(s.goal.label) + '</div><button class="btn-link" data-action="toggle-edit-goal" style="color:rgba(var(--header-fg-rgb),0.8);">Modifica</button></div>' +
           goalEdit +
-          '<div style="display:flex;justify-content:space-between;font-size:13px;color:rgba(250,250,248,0.8);"><span>' + fmt(s.goal.current) + ' di ' + fmt(s.goal.target) + '</span><span>' + Math.round(goalPct) + '%</span></div>' +
-          '<div style="width:100%;height:8px;background:rgba(250,250,248,0.2);border-radius:4px;overflow:hidden;"><div style="height:100%;background:#FAFAF8;border-radius:4px;width:' + goalPct + '%;"></div></div>' +
+          '<div style="display:flex;justify-content:space-between;font-size:13px;color:rgba(var(--header-fg-rgb),0.8);"><span>' + fmt(s.goal.current) + ' di ' + fmt(s.goal.target) + '</span><span>' + Math.round(goalPct) + '%</span></div>' +
+          '<div style="width:100%;height:8px;background:rgba(var(--header-fg-rgb),0.2);border-radius:4px;overflow:hidden;"><div style="height:100%;background:var(--header-fg);border-radius:4px;width:' + goalPct + '%;"></div></div>' +
         '</div>' +
       '</div>'
     );
   }
 
   function insightCard(title, value, status, color, bg, tip) {
-    return '<div style="border:1px solid #E4E2DC;border-radius:12px;padding:14px 16px;display:flex;flex-direction:column;gap:8px;">' +
-      '<div class="row"><div style="font-size:13px;color:#6B6862;">' + title + '</div><span class="badge" style="background:' + bg + ';color:' + color + ';">' + status + '</span></div>' +
+    return '<div style="border:1px solid var(--border);border-radius:12px;padding:14px 16px;display:flex;flex-direction:column;gap:8px;">' +
+      '<div class="row"><div style="font-size:13px;color:var(--muted);">' + title + '</div><span class="badge" style="background:' + bg + ';color:' + color + ';">' + status + '</span></div>' +
       '<div style="font-size:19px;font-weight:600;font-family:\'Fraunces\',serif;">' + value + '</div>' +
-      '<div style="font-size:12px;color:#6B6862;line-height:1.5;">' + tip + '</div>' +
+      '<div style="font-size:12px;color:var(--muted);line-height:1.5;">' + tip + '</div>' +
       '</div>';
   }
 
@@ -1704,33 +1767,33 @@
     var cards = [];
     if (monthlyExpense > 0) {
       var months = totalAccounts / monthlyExpense;
-      if (months >= 6) cards.push(insightCard('Fondo di emergenza', months.toFixed(1) + ' mesi coperti', 'Ottimo', ACCENT, 'rgba(31,111,92,0.1)', 'Hai una riserva solida per gli imprevisti: puoi destinare il resto a risparmio o investimenti.'));
-      else if (months >= 3) cards.push(insightCard('Fondo di emergenza', months.toFixed(1) + ' mesi coperti', 'Adeguato', WARN, 'rgba(176,137,0,0.1)', 'Un obiettivo comune è arrivare a coprire 6 mesi di spese prima di investire tutto il resto.'));
-      else cards.push(insightCard('Fondo di emergenza', months.toFixed(1) + ' mesi coperti', 'Basso', NEGATIVE, 'rgba(179,65,58,0.1)', 'Prima regola di base: costruisci un fondo di emergenza di 3-6 mesi di spese, tenuto liquido.'));
+      if (months >= 6) cards.push(insightCard('Fondo di emergenza', months.toFixed(1) + ' mesi coperti', 'Ottimo', ACCENT, 'rgba(var(--accent-rgb),0.1)', 'Hai una riserva solida per gli imprevisti: puoi destinare il resto a risparmio o investimenti.'));
+      else if (months >= 3) cards.push(insightCard('Fondo di emergenza', months.toFixed(1) + ' mesi coperti', 'Adeguato', WARN, 'rgba(var(--warn-rgb),0.1)', 'Un obiettivo comune è arrivare a coprire 6 mesi di spese prima di investire tutto il resto.'));
+      else cards.push(insightCard('Fondo di emergenza', months.toFixed(1) + ' mesi coperti', 'Basso', NEGATIVE, 'rgba(var(--negative-rgb),0.1)', 'Prima regola di base: costruisci un fondo di emergenza di 3-6 mesi di spese, tenuto liquido.'));
     } else {
-      cards.push(insightCard('Fondo di emergenza', '&mdash;', 'N/D', '#6B6862', '#F0EFEA', 'Registra qualche uscita mensile per calcolare quanti mesi di spese copri con la liquidità.'));
+      cards.push(insightCard('Fondo di emergenza', '&mdash;', 'N/D', 'var(--muted)', 'var(--divider)', 'Registra qualche uscita mensile per calcolare quanti mesi di spese copri con la liquidità.'));
     }
     if (monthlyIncome > 0) {
       var rate = (monthlyIncome - monthlyExpense) / monthlyIncome * 100;
-      if (rate < 0) cards.push(insightCard('Tasso di risparmio (mese)', rate.toFixed(0) + '%', 'Attenzione', NEGATIVE, 'rgba(179,65,58,0.1)', 'Questo mese le uscite superano le entrate: rivedi le voci di spesa più alte.'));
-      else if (rate >= 20) cards.push(insightCard('Tasso di risparmio (mese)', rate.toFixed(0) + '%', 'Ottimo', ACCENT, 'rgba(31,111,92,0.1)', 'Un tasso di risparmio del 20% o più è un ottimo punto di partenza per investire con regolarità. Gli acquisti di titoli contano come risparmio, non come spesa.'));
-      else if (rate >= 10) cards.push(insightCard('Tasso di risparmio (mese)', rate.toFixed(0) + '%', 'Buono', WARN, 'rgba(176,137,0,0.1)', 'Sei sulla buona strada: prova ad avvicinarti al 20% di risparmio sul reddito.'));
-      else cards.push(insightCard('Tasso di risparmio (mese)', rate.toFixed(0) + '%', 'Basso', NEGATIVE, 'rgba(179,65,58,0.1)', '"Prima paga te stesso": prova a mettere da parte una quota fissa appena arriva lo stipendio.'));
+      if (rate < 0) cards.push(insightCard('Tasso di risparmio (mese)', rate.toFixed(0) + '%', 'Attenzione', NEGATIVE, 'rgba(var(--negative-rgb),0.1)', 'Questo mese le uscite superano le entrate: rivedi le voci di spesa più alte.'));
+      else if (rate >= 20) cards.push(insightCard('Tasso di risparmio (mese)', rate.toFixed(0) + '%', 'Ottimo', ACCENT, 'rgba(var(--accent-rgb),0.1)', 'Un tasso di risparmio del 20% o più è un ottimo punto di partenza per investire con regolarità. Gli acquisti di titoli contano come risparmio, non come spesa.'));
+      else if (rate >= 10) cards.push(insightCard('Tasso di risparmio (mese)', rate.toFixed(0) + '%', 'Buono', WARN, 'rgba(var(--warn-rgb),0.1)', 'Sei sulla buona strada: prova ad avvicinarti al 20% di risparmio sul reddito.'));
+      else cards.push(insightCard('Tasso di risparmio (mese)', rate.toFixed(0) + '%', 'Basso', NEGATIVE, 'rgba(var(--negative-rgb),0.1)', '"Prima paga te stesso": prova a mettere da parte una quota fissa appena arriva lo stipendio.'));
     } else {
-      cards.push(insightCard('Tasso di risparmio (mese)', '&mdash;', 'N/D', '#6B6862', '#F0EFEA', 'Registra un’entrata questo mese per calcolare quanto riesci a risparmiare.'));
+      cards.push(insightCard('Tasso di risparmio (mese)', '&mdash;', 'N/D', 'var(--muted)', 'var(--divider)', 'Registra un’entrata questo mese per calcolare quanto riesci a risparmiare.'));
     }
-    if (totalDebt <= 0) cards.push(insightCard('Debiti', fmt(0), 'A posto', ACCENT, 'rgba(31,111,92,0.1)', 'Nessun debito aperto: la liquidità in eccesso può andare a risparmio o investimenti.'));
-    else if (totalDebt > totalAccounts) cards.push(insightCard('Debiti', fmt(totalDebt), 'Priorità', NEGATIVE, 'rgba(179,65,58,0.1)', 'I debiti superano la liquidità disponibile: prima di investire, valuta di saldarli, specie se a tasso alto.'));
-    else cards.push(insightCard('Debiti', fmt(totalDebt), 'Da monitorare', WARN, 'rgba(176,137,0,0.1)', 'Hai debiti aperti: un debito "cattivo" (tasso alto, beni che si svalutano) va saldato prima di investire.'));
+    if (totalDebt <= 0) cards.push(insightCard('Debiti', fmt(0), 'A posto', ACCENT, 'rgba(var(--accent-rgb),0.1)', 'Nessun debito aperto: la liquidità in eccesso può andare a risparmio o investimenti.'));
+    else if (totalDebt > totalAccounts) cards.push(insightCard('Debiti', fmt(totalDebt), 'Priorità', NEGATIVE, 'rgba(var(--negative-rgb),0.1)', 'I debiti superano la liquidità disponibile: prima di investire, valuta di saldarli, specie se a tasso alto.'));
+    else cards.push(insightCard('Debiti', fmt(totalDebt), 'Da monitorare', WARN, 'rgba(var(--warn-rgb),0.1)', 'Hai debiti aperti: un debito "cattivo" (tasso alto, beni che si svalutano) va saldato prima di investire.'));
 
     var budgeted = s.expenseCategories.filter(function (c) { return Number(c.budget) > 0; });
     if (budgeted.length) {
       var spentNow = monthExpenseByCategory(s, monthKey(), isNeutral);
       var over = budgeted.filter(function (c) { return (spentNow[c.name] || 0) > Number(c.budget); });
       var near = budgeted.filter(function (c) { var v = spentNow[c.name] || 0; return v <= Number(c.budget) && v >= Number(c.budget) * 0.8; });
-      if (over.length) cards.push(insightCard('Budget del mese', over.length + ' su ' + budgeted.length + ' sforati', 'Attenzione', NEGATIVE, 'rgba(179,65,58,0.1)', 'Sforati: ' + over.map(function (c) { return esc(c.name); }).join(', ') + '. Dettaglio in "Mese per mese".'));
-      else if (near.length) cards.push(insightCard('Budget del mese', near.length + ' vicini al limite', 'Da monitorare', WARN, 'rgba(176,137,0,0.1)', 'Oltre l\'80%: ' + near.map(function (c) { return esc(c.name); }).join(', ') + '.'));
-      else cards.push(insightCard('Budget del mese', 'Tutto nei limiti', 'Ottimo', ACCENT, 'rgba(31,111,92,0.1)', budgeted.length + (budgeted.length === 1 ? ' categoria' : ' categorie') + ' con budget, nessuna sforata.'));
+      if (over.length) cards.push(insightCard('Budget del mese', over.length + ' su ' + budgeted.length + ' sforati', 'Attenzione', NEGATIVE, 'rgba(var(--negative-rgb),0.1)', 'Sforati: ' + over.map(function (c) { return esc(c.name); }).join(', ') + '. Dettaglio in "Mese per mese".'));
+      else if (near.length) cards.push(insightCard('Budget del mese', near.length + ' vicini al limite', 'Da monitorare', WARN, 'rgba(var(--warn-rgb),0.1)', 'Oltre l\'80%: ' + near.map(function (c) { return esc(c.name); }).join(', ') + '.'));
+      else cards.push(insightCard('Budget del mese', 'Tutto nei limiti', 'Ottimo', ACCENT, 'rgba(var(--accent-rgb),0.1)', budgeted.length + (budgeted.length === 1 ? ' categoria' : ' categorie') + ' con budget, nessuna sforata.'));
     }
 
     return '<div class="card"><div><div class="section-title">Salute finanziaria</div><div class="muted" style="font-size:13px;margin-top:4px;">Indicatori di base, calcolati sui tuoi dati del mese in corso.</div></div><div class="grid-fit">' + cards.join('') + '</div></div>';
@@ -1740,7 +1803,7 @@
     var periodDefs = [{ key: 'giorno', label: 'Giorno' }, { key: 'settimana', label: 'Settimana' }, { key: 'mese', label: 'Mese' }, { key: 'anno', label: 'Anno' }, { key: 'custom', label: 'Intervallo' }];
     var periodBtns = periodDefs.map(function (p) {
       var active = s.period === p.key;
-      return '<button class="btn" data-action="pick-period" data-key="' + p.key + '" style="border-radius:7px;padding:7px 14px;background:' + (active ? ACCENT : 'transparent') + ';color:' + (active ? '#fff' : '#1E1D1B') + ';">' + p.label + '</button>';
+      return '<button class="btn" data-action="pick-period" data-key="' + p.key + '" style="border-radius:7px;padding:7px 14px;background:' + (active ? ACCENT : 'transparent') + ';color:' + (active ? 'var(--accent-ink)' : 'var(--ink)') + ';">' + p.label + '</button>';
     }).join('');
 
     var customRange = s.period === 'custom'
@@ -1753,19 +1816,19 @@
     Object.keys(expenseByCat).forEach(function (k) { if (expenseByCat[k] > maxCatVal) maxCatVal = expenseByCat[k]; });
     var topCats = Object.keys(expenseByCat).map(function (name) { return [name, expenseByCat[name]]; }).sort(function (a, b) { return b[1] - a[1]; }).slice(0, 6);
     var topCatsHtml = topCats.length ? (
-      '<div style="display:flex;flex-direction:column;gap:10px;"><div style="font-size:13px;font-weight:600;color:#6B6862;">Dove spendo di più</div>' +
+      '<div style="display:flex;flex-direction:column;gap:10px;"><div style="font-size:13px;font-weight:600;color:var(--muted);">Dove spendo di più</div>' +
       topCats.map(function (pair) {
         var meta = catMeta(s.expenseCategories.concat(s.incomeCategories), pair[0]);
         var active = s.txCategoryFilter === pair[0];
-        return '<button data-action="filter-tx-category" data-cat="' + esc(pair[0]) + '" style="display:flex;align-items:center;gap:10px;background:none;border:none;padding:4px 2px;cursor:pointer;width:100%;text-align:left;border-radius:8px;' + (active ? 'background:#F0EFEA;' : '') + '">' + avatarHtml(meta, 26) +
-          '<span style="width:100px;font-size:12px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#1E1D1B;">' + esc(pair[0]) + '</span>' +
+        return '<button data-action="filter-tx-category" data-cat="' + esc(pair[0]) + '" style="display:flex;align-items:center;gap:10px;background:none;border:none;padding:4px 2px;cursor:pointer;width:100%;text-align:left;border-radius:8px;' + (active ? 'background:var(--divider);' : '') + '">' + avatarHtml(meta, 26) +
+          '<span style="width:100px;font-size:12px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink);">' + esc(pair[0]) + '</span>' +
           '<div class="bar-track"><div class="bar-fill" style="background:' + meta.color + ';width:' + (pair[1] / maxCatVal * 100) + '%;"></div></div>' +
-          '<span style="font-size:12px;font-weight:600;width:80px;text-align:right;flex-shrink:0;color:#1E1D1B;">' + fmt(pair[1]) + '</span></button>';
+          '<span style="font-size:12px;font-weight:600;width:80px;text-align:right;flex-shrink:0;color:var(--ink);">' + fmt(pair[1]) + '</span></button>';
       }).join('') + '</div>'
     ) : '';
 
     var filterNotice = s.txCategoryFilter ? (
-      '<div class="row" style="background:#F6F5F2;border-radius:8px;padding:8px 12px;"><span style="font-size:12px;">Filtro: <strong>' + esc(s.txCategoryFilter) + '</strong></span><button class="btn-link" data-action="clear-tx-category-filter">Rimuovi filtro ✕</button></div>'
+      '<div class="row" style="background:var(--surface-2);border-radius:8px;padding:8px 12px;"><span style="font-size:12px;">Filtro: <strong>' + esc(s.txCategoryFilter) + '</strong></span><button class="btn-link" data-action="clear-tx-category-filter">Rimuovi filtro ✕</button></div>'
     ) : '';
     var txSource = s.txCategoryFilter ? periodTx.filter(function (t) { return t.category === s.txCategoryFilter; }) : periodTx;
 
@@ -1793,11 +1856,11 @@
       var meta = catMeta(s.expenseCategories.concat(s.incomeCategories), t.category);
       var neutral = isNeutral(t);
       var amountFmt = (t.type === 'entrata' ? '+' : '-') + fmt(t.amount);
-      var color = neutral ? '#6B6862' : (t.type === 'entrata' ? ACCENT : NEGATIVE);
+      var color = neutral ? 'var(--muted)' : (t.type === 'entrata' ? ACCENT : NEGATIVE);
       var acc = t.accountId ? s.accounts.find(function (a) { return a.id === t.accountId; }) : null;
       var subtitle = fmtDate(t.date) + (acc ? ' &middot; ' + esc(acc.name) : '') + ' &middot; ' + esc(t.note || '—') + (neutral ? ' &middot; <span title="Giroconto o compravendita titoli: aggiorna il saldo ma non conta come spesa o entrata">fuori dai totali</span>' : '');
       return '<div class="list-row"><button data-action="start-edit-tx" data-id="' + t.id + '" style="background:none;border:none;cursor:pointer;padding:0;text-align:left;display:flex;align-items:center;gap:10px;">' + avatarHtml(meta, 30) +
-        '<div><div style="font-size:14px;font-weight:500;color:#1E1D1B;">' + esc(t.category) + '</div><div class="muted" style="font-size:12px;">' + subtitle + '</div></div></button>' +
+        '<div><div style="font-size:14px;font-weight:500;color:var(--ink);">' + esc(t.category) + '</div><div class="muted" style="font-size:12px;">' + subtitle + '</div></div></button>' +
         '<div style="display:flex;align-items:center;gap:12px;"><div style="font-size:14px;font-weight:600;color:' + color + ';">' + amountFmt + '</div>' +
         '<button class="icon-btn" data-action="remove-tx" data-id="' + t.id + '" aria-label="Rimuovi movimento">' + xIcon() + '</button></div></div>';
     }).join('');
@@ -1807,10 +1870,10 @@
       var selected = s.newTxCategory === c.name;
       var meta = { color: c.color, initials: c.name.trim().slice(0, 2).toUpperCase(), iconD: c.icon && ICONS[c.icon] ? ICONS[c.icon] : null };
       return '<button data-action="pick-tx-category" data-cat="' + esc(c.name) + '" style="background:none;border:none;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:6px;padding:2px;">' +
-        '<div style="width:46px;height:46px;border-radius:50%;background:' + meta.color + ';display:flex;align-items:center;justify-content:center;color:#fff;font-size:14px;font-weight:600;box-shadow:' + (selected ? '0 0 0 3px rgba(30,29,27,0.35)' : 'none') + ';">' +
+        '<div style="width:46px;height:46px;border-radius:50%;background:' + meta.color + ';display:flex;align-items:center;justify-content:center;color:#fff;font-size:14px;font-weight:600;box-shadow:' + (selected ? '0 0 0 3px rgba(var(--ink-rgb),0.35)' : 'none') + ';">' +
         (meta.iconD ? '<svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="' + meta.iconD + '" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>' : esc(meta.initials)) +
-        '</div><span style="font-size:11px;color:' + (selected ? '#1E1D1B' : '#6B6862') + ';text-align:center;max-width:68px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + esc(c.name) + '</span></button>';
-    }).join('') + '<button data-action="toggle-create-cat" style="background:none;border:none;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:6px;padding:2px;"><div style="width:46px;height:46px;border-radius:50%;background:#E4E2DC;display:flex;align-items:center;justify-content:center;color:#6B6862;font-size:20px;">+</div><span style="font-size:11px;color:#6B6862;">Nuova</span></button>';
+        '</div><span style="font-size:11px;color:' + (selected ? 'var(--ink)' : 'var(--muted)') + ';text-align:center;max-width:68px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + esc(c.name) + '</span></button>';
+    }).join('') + '<button data-action="toggle-create-cat" style="background:none;border:none;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:6px;padding:2px;"><div style="width:46px;height:46px;border-radius:50%;background:var(--border);display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:20px;">+</div><span style="font-size:11px;color:var(--muted);">Nuova</span></button>';
 
     var createCatBox = s.showCreateCat ? renderCreateCat(s) : '';
     var manageBox = s.managingCategories ? renderManageCategories(s) : '';
@@ -1838,23 +1901,23 @@
 
     return '<div class="card">' +
       '<div class="row" style="flex-wrap:wrap;"><div class="section-title">Entrate e uscite</div>' +
-      '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;max-width:100%;"><div style="display:flex;gap:4px;background:#F6F5F2;padding:4px;border-radius:10px;max-width:100%;overflow-x:auto;">' + periodBtns + '</div>' +
+      '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;max-width:100%;"><div style="display:flex;gap:4px;background:var(--surface-2);padding:4px;border-radius:10px;max-width:100%;overflow-x:auto;">' + periodBtns + '</div>' +
       '<button class="btn btn-ghost" data-action="toggle" data-field="showImport">Importa</button><button class="btn btn-ghost" data-action="export-csv">Esporta CSV</button><button class="btn btn-ghost" data-action="print-page">Stampa / PDF</button></div></div>' +
       renderImportPanel(s) +
       customRange +
       '<div class="grid-fit" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr));">' +
-      '<div style="background:#F6F5F2;border-radius:12px;padding:14px 16px;"><div class="muted" style="font-size:12px;">Entrate</div><div style="font-size:19px;font-weight:600;color:' + ACCENT + ';margin-top:4px;">' + fmt(periodIncome) + '</div></div>' +
-      '<div style="background:#F6F5F2;border-radius:12px;padding:14px 16px;"><div class="muted" style="font-size:12px;">Uscite</div><div style="font-size:19px;font-weight:600;color:' + NEGATIVE + ';margin-top:4px;">' + fmt(periodExpense) + '</div></div>' +
-      '<div style="background:#F6F5F2;border-radius:12px;padding:14px 16px;"><div class="muted" style="font-size:12px;">Netto</div><div style="font-size:19px;font-weight:600;margin-top:4px;color:' + (periodNet >= 0 ? ACCENT : NEGATIVE) + ';">' + (periodNet >= 0 ? '+' : '') + fmt(periodNet) + '</div></div>' +
-      (Math.abs(periodMoved) >= 0.005 ? '<div style="background:#F6F5F2;border-radius:12px;padding:14px 16px;" title="Giroconti e acquisti/vendite di titoli: non sono spese, quindi restano fuori da entrate e uscite"><div class="muted" style="font-size:12px;">' + (periodMoved >= 0 ? 'Investito / spostato' : 'Rientrato da investimenti') + '</div><div style="font-size:19px;font-weight:600;margin-top:4px;color:#1E1D1B;">' + fmt(Math.abs(periodMoved)) + '</div></div>' : '') +
+      '<div style="background:var(--surface-2);border-radius:12px;padding:14px 16px;"><div class="muted" style="font-size:12px;">Entrate</div><div style="font-size:19px;font-weight:600;color:' + ACCENT + ';margin-top:4px;">' + fmt(periodIncome) + '</div></div>' +
+      '<div style="background:var(--surface-2);border-radius:12px;padding:14px 16px;"><div class="muted" style="font-size:12px;">Uscite</div><div style="font-size:19px;font-weight:600;color:' + NEGATIVE + ';margin-top:4px;">' + fmt(periodExpense) + '</div></div>' +
+      '<div style="background:var(--surface-2);border-radius:12px;padding:14px 16px;"><div class="muted" style="font-size:12px;">Netto</div><div style="font-size:19px;font-weight:600;margin-top:4px;color:' + (periodNet >= 0 ? ACCENT : NEGATIVE) + ';">' + (periodNet >= 0 ? '+' : '') + fmt(periodNet) + '</div></div>' +
+      (Math.abs(periodMoved) >= 0.005 ? '<div style="background:var(--surface-2);border-radius:12px;padding:14px 16px;" title="Giroconti e acquisti/vendite di titoli: non sono spese, quindi restano fuori da entrate e uscite"><div class="muted" style="font-size:12px;">' + (periodMoved >= 0 ? 'Investito / spostato' : 'Rientrato da investimenti') + '</div><div style="font-size:19px;font-weight:600;margin-top:4px;color:var(--ink);">' + fmt(Math.abs(periodMoved)) + '</div></div>' : '') +
       '</div>' +
       '<div style="display:flex;flex-direction:column;gap:8px;">' +
-      '<div style="display:flex;align-items:center;gap:10px;"><span style="width:56px;font-size:12px;color:#6B6862;">Entrate</span><div class="bar-track"><div class="bar-fill" style="background:' + ACCENT + ';width:' + (periodIncome / maxBar * 100) + '%;"></div></div></div>' +
-      '<div style="display:flex;align-items:center;gap:10px;"><span style="width:56px;font-size:12px;color:#6B6862;">Uscite</span><div class="bar-track"><div class="bar-fill" style="background:' + NEGATIVE + ';width:' + (periodExpense / maxBar * 100) + '%;"></div></div></div>' +
+      '<div style="display:flex;align-items:center;gap:10px;"><span style="width:56px;font-size:12px;color:var(--muted);">Entrate</span><div class="bar-track"><div class="bar-fill" style="background:' + ACCENT + ';width:' + (periodIncome / maxBar * 100) + '%;"></div></div></div>' +
+      '<div style="display:flex;align-items:center;gap:10px;"><span style="width:56px;font-size:12px;color:var(--muted);">Uscite</span><div class="bar-track"><div class="bar-fill" style="background:' + NEGATIVE + ';width:' + (periodExpense / maxBar * 100) + '%;"></div></div></div>' +
       '</div>' +
       topCatsHtml +
       filterNotice +
-      '<div style="display:flex;flex-direction:column;gap:2px;border-top:1px solid #E4E2DC;padding-top:10px;">' + (txList || '<div class="muted" style="font-size:13px;padding:10px 4px;">Nessun movimento in questo periodo.</div>') + '</div>' +
+      '<div style="display:flex;flex-direction:column;gap:2px;border-top:1px solid var(--border);padding-top:10px;">' + (txList || '<div class="muted" style="font-size:13px;padding:10px 4px;">Nessun movimento in questo periodo.</div>') + '</div>' +
       '<div><button class="btn btn-primary" data-action="toggle" data-field="showAddTx">+ Aggiungi movimento</button>' + addTxForm + '</div>' +
       '</div>';
   }
@@ -1907,7 +1970,7 @@
     var prev = prevMonthKey(sel);
 
     var head = '<div class="row" style="flex-wrap:wrap;"><div class="section-title">Mese per mese</div>' +
-      '<div style="display:flex;gap:14px;font-size:12px;color:#6B6862;align-items:center;">' +
+      '<div style="display:flex;gap:14px;font-size:12px;color:var(--muted);align-items:center;">' +
       '<span style="display:flex;align-items:center;gap:6px;"><span style="width:10px;height:10px;border-radius:3px;background:' + ACCENT + ';"></span>Entrate</span>' +
       '<span style="display:flex;align-items:center;gap:6px;"><span style="width:10px;height:10px;border-radius:3px;background:' + NEGATIVE + ';"></span>Uscite</span></div></div>';
 
@@ -1927,18 +1990,18 @@
     var svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" width="100%" role="img" aria-label="Entrate e uscite degli ultimi 12 mesi" style="display:block;font-family:\'Public Sans\',sans-serif;">';
     [0, 0.5, 1].forEach(function (f) {
       var gy = y(max * f);
-      svg += '<line x1="' + padL + '" x2="' + (W - padR) + '" y1="' + gy + '" y2="' + gy + '" stroke="#E4E2DC" stroke-width="1"' + (f === 0 ? '' : ' stroke-dasharray="3 4"') + '/>';
-      svg += '<text x="' + (padL - 6) + '" y="' + (gy + 4) + '" text-anchor="end" font-size="11" fill="#6B6862">' + fmtCompact(max * f) + '</text>';
+      svg += '<line x1="' + padL + '" x2="' + (W - padR) + '" y1="' + gy + '" y2="' + gy + '" stroke="var(--border)" stroke-width="1"' + (f === 0 ? '' : ' stroke-dasharray="3 4"') + '/>';
+      svg += '<text x="' + (padL - 6) + '" y="' + (gy + 4) + '" text-anchor="end" font-size="11" fill="var(--muted)">' + fmtCompact(max * f) + '</text>';
     });
     keys.forEach(function (k, i) {
       var gx = padL + i * groupW;
       var cx = gx + groupW / 2;
       var d = byMonth[k];
       var isSel = k === sel;
-      if (isSel) svg += '<rect x="' + (gx + 1) + '" y="' + padT + '" width="' + (groupW - 2) + '" height="' + plotH + '" rx="6" fill="#F0EFEA"/>';
+      if (isSel) svg += '<rect x="' + (gx + 1) + '" y="' + padT + '" width="' + (groupW - 2) + '" height="' + plotH + '" rx="6" fill="var(--divider)"/>';
       svg += '<path d="' + barPath(cx - barW - 1, y(d.inc), barW, padT + plotH - y(d.inc), 4) + '" fill="' + ACCENT + '"/>';
       svg += '<path d="' + barPath(cx + 1, y(d.exp), barW, padT + plotH - y(d.exp), 4) + '" fill="' + NEGATIVE + '"/>';
-      svg += '<text x="' + cx + '" y="' + (H - 8) + '" text-anchor="middle" font-size="11" fill="' + (isSel ? '#1E1D1B' : '#6B6862') + '" font-weight="' + (isSel ? '700' : '400') + '">' + monthLabel(k) + '</text>';
+      svg += '<text x="' + cx + '" y="' + (H - 8) + '" text-anchor="middle" font-size="11" fill="' + (isSel ? 'var(--ink)' : 'var(--muted)') + '" font-weight="' + (isSel ? '700' : '400') + '">' + monthLabel(k) + '</text>';
       // area cliccabile più grande della barra, con tooltip nativo
       svg += '<rect data-action="pick-month" data-key="' + k + '" x="' + gx + '" y="0" width="' + groupW + '" height="' + H + '" fill="transparent" style="cursor:pointer;"><title>' + monthLabel(k, true) + ' — Entrate ' + fmt(d.inc) + ' · Uscite ' + fmt(d.exp) + ' · Netto ' + fmt(d.inc - d.exp) + '</title></rect>';
     });
@@ -1955,7 +2018,7 @@
     var rate = cur.inc > 0 ? Math.round(net / cur.inc * 100) : null;
     var expDelta = cur.exp - prevData.exp;
     var tile = function (label, value, color, sub) {
-      return '<div style="background:#F6F5F2;border-radius:12px;padding:12px 14px;"><div class="muted" style="font-size:12px;">' + label + '</div><div style="font-size:17px;font-weight:600;margin-top:4px;color:' + (color || '#1E1D1B') + ';">' + value + '</div>' + (sub ? '<div class="muted" style="font-size:11px;margin-top:2px;">' + sub + '</div>' : '') + '</div>';
+      return '<div style="background:var(--surface-2);border-radius:12px;padding:12px 14px;"><div class="muted" style="font-size:12px;">' + label + '</div><div style="font-size:17px;font-weight:600;margin-top:4px;color:' + (color || 'var(--ink)') + ';">' + value + '</div>' + (sub ? '<div class="muted" style="font-size:11px;margin-top:2px;">' + sub + '</div>' : '') + '</div>';
     };
     var tiles = '<div class="grid-fit" style="grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;">' +
       tile('Entrate', fmt(cur.inc), ACCENT) +
@@ -1988,9 +2051,9 @@
           var pct = r.cur / budget;
           var bc = pct > 1 ? NEGATIVE : (pct >= 0.8 ? WARN : ACCENT);
           budgetHtml = '<div style="display:flex;align-items:center;gap:8px;margin-top:6px;"><div class="bar-track" style="height:6px;"><div class="bar-fill" style="background:' + bc + ';width:' + Math.min(100, pct * 100) + '%;"></div></div>' +
-            '<span style="font-size:11px;white-space:nowrap;color:' + (pct > 1 ? NEGATIVE : '#6B6862') + ';">' + (pct > 1 ? 'Sforato: ' : '') + fmt(r.cur) + ' di ' + fmt(budget) + '</span></div>';
+            '<span style="font-size:11px;white-space:nowrap;color:' + (pct > 1 ? NEGATIVE : 'var(--muted)') + ';">' + (pct > 1 ? 'Sforato: ' : '') + fmt(r.cur) + ' di ' + fmt(budget) + '</span></div>';
         }
-        return '<div style="padding:9px 2px;border-bottom:1px solid #F0EFEA;"><div style="display:flex;align-items:center;gap:10px;">' + avatarHtml(meta, 26) +
+        return '<div style="padding:9px 2px;border-bottom:1px solid var(--divider);"><div style="display:flex;align-items:center;gap:10px;">' + avatarHtml(meta, 26) +
           '<div style="flex:1;min-width:0;"><div style="display:flex;justify-content:space-between;gap:8px;"><span style="font-size:13px;font-weight:500;">' + esc(r.name) + '</span><span style="font-size:13px;font-weight:600;">' + fmt(r.cur) + '</span></div>' +
           '<div style="font-size:11px;margin-top:2px;">' + diffHtml + '</div>' + budgetHtml + '</div></div></div>';
       }).join('');
@@ -2000,7 +2063,7 @@
       svg +
       '<div style="font-size:14px;font-weight:600;text-transform:capitalize;">' + monthLabel(sel, true) + '</div>' +
       tiles +
-      '<div><div style="font-size:13px;font-weight:600;color:#6B6862;margin-bottom:4px;">Uscite per categoria</div>' + (rows || '<div class="muted" style="font-size:13px;">Nessuna uscita in questo mese.</div>') +
+      '<div><div style="font-size:13px;font-weight:600;color:var(--muted);margin-bottom:4px;">Uscite per categoria</div>' + (rows || '<div class="muted" style="font-size:13px;">Nessuna uscita in questo mese.</div>') +
       '<div style="margin-top:10px;"><button class="btn btn-ghost" data-action="toggle-budgets">' + (s.showBudgets ? 'Chiudi categorie e budget' : 'Imposta budget e categorie') + '</button></div>' +
       (s.showBudgets ? ((s.showCreateCat && s.editingCatId != null) ? renderCreateCat(s) : '') + renderManageCategories(s) : '') + '</div>' +
       '</div>';
@@ -2039,10 +2102,10 @@
 
     var svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" width="100%" role="img" aria-label="Patrimonio netto nel tempo" style="display:block;font-family:\'Public Sans\',sans-serif;">';
     [vMin, (vMin + vMax) / 2, vMax].forEach(function (v, i) {
-      svg += '<line x1="' + padL + '" x2="' + (W - padR) + '" y1="' + y(v) + '" y2="' + y(v) + '" stroke="#E4E2DC" stroke-width="1"' + (i === 0 ? '' : ' stroke-dasharray="3 4"') + '/>';
-      svg += '<text x="' + (padL - 6) + '" y="' + (y(v) + 4) + '" text-anchor="end" font-size="11" fill="#6B6862">' + fmtCompact(v) + '</text>';
+      svg += '<line x1="' + padL + '" x2="' + (W - padR) + '" y1="' + y(v) + '" y2="' + y(v) + '" stroke="var(--border)" stroke-width="1"' + (i === 0 ? '' : ' stroke-dasharray="3 4"') + '/>';
+      svg += '<text x="' + (padL - 6) + '" y="' + (y(v) + 4) + '" text-anchor="end" font-size="11" fill="var(--muted)">' + fmtCompact(v) + '</text>';
     });
-    if (vMin < 0) svg += '<line x1="' + padL + '" x2="' + (W - padR) + '" y1="' + y(0) + '" y2="' + y(0) + '" stroke="#A6A39B" stroke-width="1"/>';
+    if (vMin < 0) svg += '<line x1="' + padL + '" x2="' + (W - padR) + '" y1="' + y(0) + '" y2="' + y(0) + '" stroke="var(--faint)" stroke-width="1"/>';
     var line = hist.map(function (h, i) { return (i ? 'L' : 'M') + x(h.m).toFixed(1) + ',' + y(h.nw).toFixed(1); }).join('');
     var base = y(Math.max(0, vMin));
     svg += '<path d="' + line + 'L' + x(hist[hist.length - 1].m).toFixed(1) + ',' + base + 'L' + x(hist[0].m).toFixed(1) + ',' + base + 'Z" fill="' + ACCENT + '" fill-opacity="0.08"/>';
@@ -2051,10 +2114,10 @@
     var step = Math.max(1, Math.ceil(hist.length / 7));
     hist.forEach(function (h, i) {
       var cx = x(h.m), cy = y(h.nw);
-      svg += '<circle cx="' + cx + '" cy="' + cy + '" r="4" fill="' + (h.manual ? '#FFFFFF' : ACCENT) + '" stroke="' + (h.manual ? ACCENT : '#FFFFFF') + '" stroke-width="2"/>';
+      svg += '<circle cx="' + cx + '" cy="' + cy + '" r="4" fill="' + (h.manual ? 'var(--surface)' : ACCENT) + '" stroke="' + (h.manual ? ACCENT : 'var(--surface)') + '" stroke-width="2"/>';
       svg += '<circle cx="' + cx + '" cy="' + cy + '" r="14" fill="transparent"><title>' + monthLabel(h.m, true) + ': ' + fmt(h.nw) + (h.manual ? ' (inserito a mano)' : '') + '</title></circle>';
       if (i % step === 0 || i === hist.length - 1) {
-        svg += '<text x="' + cx + '" y="' + (H - 8) + '" text-anchor="middle" font-size="11" fill="#6B6862">' + monthLabel(h.m) + (h.m.slice(5) === '01' || i === 0 ? ' ' + h.m.slice(2, 4) : '') + '</text>';
+        svg += '<text x="' + cx + '" y="' + (H - 8) + '" text-anchor="middle" font-size="11" fill="var(--muted)">' + monthLabel(h.m) + (h.m.slice(5) === '01' || i === 0 ? ' ' + h.m.slice(2, 4) : '') + '</text>';
       }
     });
     svg += '</svg>';
@@ -2077,7 +2140,7 @@
     }).join('');
 
     return '<div class="card">' + title + summary + svg +
-      '<details><summary style="cursor:pointer;font-size:13px;color:#6B6862;">Valori mese per mese</summary><div style="margin-top:6px;">' + rows + '</div></details>' +
+      '<details><summary style="cursor:pointer;font-size:13px;color:var(--muted);">Valori mese per mese</summary><div style="margin-top:6px;">' + rows + '</div></details>' +
       addBtn + addForm + '</div>';
   }
 
@@ -2098,8 +2161,8 @@
     var dupBadge = function (r) {
       if (!r.dup) return '';
       return r.dup === 'exact'
-        ? '<span class="badge" style="background:rgba(179,65,58,0.1);color:' + NEGATIVE + ';">Già presente</span>'
-        : '<span class="badge" style="background:rgba(176,137,0,0.12);color:#7A5F00;" title="Stessa data, importo e tipo di un movimento già salvato">Possibile doppione</span>';
+        ? '<span class="badge" style="background:rgba(var(--negative-rgb),0.1);color:' + NEGATIVE + ';">Già presente</span>'
+        : '<span class="badge" style="background:rgba(var(--warn-rgb),0.12);color:var(--warn-ink);" title="Stessa data, importo e tipo di un movimento già salvato">Possibile doppione</span>';
     };
     var dupCount = s.importRows.filter(function (r) { return r.dup; }).length;
 
@@ -2107,7 +2170,7 @@
       if (r.kind === 'transfer') {
         return '<div class="list-row" style="flex-wrap:wrap;">' +
           '<input type="checkbox" data-action="toggle-import-row" data-idx="' + idx + '" ' + (r.include ? 'checked' : '') + ' style="margin:0;">' +
-          '<span class="badge" style="background:#E4E2DC;color:#1E1D1B;">Giroconto</span>' + dupBadge(r) +
+          '<span class="badge" style="background:var(--border);color:var(--ink);">Giroconto</span>' + dupBadge(r) +
           '<input class="text-input" type="date" data-import-field="date" data-idx="' + idx + '" value="' + esc(r.date) + '" style="width:132px;">' +
           '<select class="text-input" data-import-field="fromAccountChoice" data-idx="' + idx + '" style="width:140px;">' + accountSelectOptions(s.accounts, newAccOpts, r.fromAccountChoice) + '</select>' +
           '<span class="muted">&rarr;</span>' +
@@ -2143,7 +2206,7 @@
 
     return html + '<div class="form-box" style="flex-direction:column;align-items:stretch;margin-top:10px;">' +
       '<div class="muted" style="font-size:12px;">Controlla e correggi le righe prima di importare: categoria e conto sono proposti automaticamente dove possibile. "+ Nuovo conto" crea il conto al momento dell\'import (senza duplicati se compare più volte).</div>' +
-      (dupCount ? '<div style="font-size:12px;color:#7A5F00;background:rgba(176,137,0,0.1);border-radius:8px;padding:8px 10px;">' + dupCount + (dupCount === 1 ? ' riga sembra già presente' : ' righe sembrano già presenti') + ' tra i tuoi movimenti: le ho deselezionate. Spuntale se vuoi importarle comunque.</div>' : '') +
+      (dupCount ? '<div style="font-size:12px;color:var(--warn-ink);background:rgba(var(--warn-rgb),0.1);border-radius:8px;padding:8px 10px;">' + dupCount + (dupCount === 1 ? ' riga sembra già presente' : ' righe sembrano già presenti') + ' tra i tuoi movimenti: le ho deselezionate. Spuntale se vuoi importarle comunque.</div>' : '') +
       '<div style="display:flex;flex-direction:column;gap:2px;max-height:360px;overflow:auto;">' + rows + '</div>' +
       '<div><button class="btn btn-primary" data-action="confirm-import">' + label + '</button></div>' +
       '</div>';
@@ -2151,13 +2214,13 @@
 
   function renderCreateCat(s) {
     var swatches = CATEGORY_PALETTE.map(function (color) {
-      return '<button data-action="pick-cat-color" data-color="' + color + '" style="width:22px;height:22px;border-radius:50%;background:' + color + ';border:' + (s.newCatColor === color ? '2px solid #1E1D1B' : '2px solid transparent') + ';cursor:pointer;padding:0;"></button>';
+      return '<button data-action="pick-cat-color" data-color="' + color + '" style="width:22px;height:22px;border-radius:50%;background:' + color + ';border:' + (s.newCatColor === color ? '2px solid var(--ink)' : '2px solid transparent') + ';cursor:pointer;padding:0;"></button>';
     }).join('');
-    var iconSwatches = '<button data-action="pick-cat-icon" data-icon="" style="width:30px;height:30px;border-radius:50%;background:#F6F5F2;border:' + (s.newCatIcon === '' ? '2px solid #1E1D1B' : '1px solid #E4E2DC') + ';cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:11px;color:#6B6862;padding:0;">Aa</button>' +
+    var iconSwatches = '<button data-action="pick-cat-icon" data-icon="" style="width:30px;height:30px;border-radius:50%;background:var(--surface-2);border:' + (s.newCatIcon === '' ? '2px solid var(--ink)' : '1px solid var(--border)') + ';cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--muted);padding:0;">Aa</button>' +
       ICON_LIST.map(function (key) {
-        return '<button data-action="pick-cat-icon" data-icon="' + key + '" style="width:30px;height:30px;border-radius:50%;background:#F6F5F2;border:' + (s.newCatIcon === key ? '2px solid #1E1D1B' : '1px solid #E4E2DC') + ';cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;color:#1E1D1B;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="' + ICONS[key] + '" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>';
+        return '<button data-action="pick-cat-icon" data-icon="' + key + '" style="width:30px;height:30px;border-radius:50%;background:var(--surface-2);border:' + (s.newCatIcon === key ? '2px solid var(--ink)' : '1px solid var(--border)') + ';cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;color:var(--ink);"><svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="' + ICONS[key] + '" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>';
       }).join('');
-    return '<div style="display:flex;flex-direction:column;gap:12px;padding:14px;background:#FFFFFF;border-radius:10px;border:1px solid #E4E2DC;margin-top:10px;">' +
+    return '<div style="display:flex;flex-direction:column;gap:12px;padding:14px;background:var(--surface);border-radius:10px;border:1px solid var(--border);margin-top:10px;">' +
       '<div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;"><input class="text-input" type="text" data-field="newCatName" value="' + esc(s.newCatName) + '" placeholder="Nome categoria" style="flex:1 1 160px;"><div style="display:flex;gap:7px;">' + swatches + '</div></div>' +
       '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;"><span class="muted" style="font-size:12px;">Icona:</span>' + iconSwatches + '</div>' +
       '<div><button class="btn btn-dark" data-action="save-category">' + (s.editingCatId != null ? 'Salva modifiche' : 'Crea categoria') + '</button></div>' +
@@ -2178,18 +2241,18 @@
             '<button class="btn-link" data-action="cancel-merge-category">Annulla</button></div>';
         }
         var extra = '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;width:100%;padding-left:40px;">' +
-          '<label style="display:flex;align-items:center;gap:6px;font-size:12px;color:#6B6862;cursor:pointer;" title="Per giroconti e compravendita di titoli: il movimento aggiorna il saldo ma non conta come ' + (type === 'income' ? 'entrata' : 'spesa') + '">' +
+          '<label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);cursor:pointer;" title="Per giroconti e compravendita di titoli: il movimento aggiorna il saldo ma non conta come ' + (type === 'income' ? 'entrata' : 'spesa') + '">' +
           '<input type="checkbox" data-action="toggle-cat-neutral" data-id="' + c.id + '" data-cattype="' + type + '" ' + (c.neutral ? 'checked' : '') + ' style="margin:0;">Fuori dai totali</label>' +
-          (type === 'expense' ? '<label style="display:flex;align-items:center;gap:6px;font-size:12px;color:#6B6862;">Budget al mese <input class="text-input" type="text" inputmode="decimal" data-cat-budget="' + c.id + '" value="' + (Number(c.budget) > 0 ? esc(String(c.budget).replace('.', ',')) : '') + '" placeholder="€" style="width:90px;padding:6px 8px;font-size:14px;"></label>' : '') +
+          (type === 'expense' ? '<label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);">Budget al mese <input class="text-input" type="text" inputmode="decimal" data-cat-budget="' + c.id + '" value="' + (Number(c.budget) > 0 ? esc(String(c.budget).replace('.', ',')) : '') + '" placeholder="€" style="width:90px;padding:6px 8px;font-size:14px;"></label>' : '') +
           '</div>';
         return '<div class="list-row" style="flex-wrap:wrap;gap:8px;"><div style="display:flex;align-items:center;gap:10px;">' + avatarHtml(meta, 30) + '<span style="font-size:13px;">' + esc(c.name) + '</span></div>' +
           '<div style="display:flex;gap:10px;"><button class="btn-link" data-action="start-merge-category" data-id="' + c.id + '" data-cattype="' + type + '">Unisci</button>' +
           '<button class="btn-link" data-action="edit-category" data-id="' + c.id + '" data-cattype="' + type + '">Modifica</button>' +
           '<button class="btn-link" data-action="remove-category" data-id="' + c.id + '" data-cattype="' + type + '" style="color:' + NEGATIVE + ';">Elimina</button></div>' + extra + '</div>';
       }).join('');
-      return '<div><div style="font-size:12px;font-weight:600;color:#6B6862;margin-bottom:8px;text-transform:uppercase;letter-spacing:0.03em;">' + title + '</div><div style="display:flex;flex-direction:column;gap:2px;">' + rows + '</div></div>';
+      return '<div><div style="font-size:12px;font-weight:600;color:var(--muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:0.03em;">' + title + '</div><div style="display:flex;flex-direction:column;gap:2px;">' + rows + '</div></div>';
     };
-    return '<div style="display:flex;flex-direction:column;gap:14px;padding:14px;background:#FFFFFF;border-radius:10px;border:1px solid #E4E2DC;margin-top:10px;">' +
+    return '<div style="display:flex;flex-direction:column;gap:14px;padding:14px;background:var(--surface);border-radius:10px;border:1px solid var(--border);margin-top:10px;">' +
       '<div class="muted" style="font-size:11px;">"Unisci" sposta tutti i movimenti di una categoria in un\'altra e la elimina: utile per accorpare doppioni (es. "Groceries" e "Spesa"). "Fuori dai totali" serve per giroconti e acquisto di titoli: aggiornano il saldo ma non sono spese. Il budget è un tetto mensile, lo vedi in "Mese per mese".</div>' +
       block('Categorie di uscita', s.expenseCategories, 'expense') + block('Categorie di entrata', s.incomeCategories, 'income') + '</div>';
   }
@@ -2199,12 +2262,12 @@
       var editing = s.editingAccountId === a.id;
       var balanceBlock = editing
         ? '<div style="display:flex;gap:8px;align-items:center;"><input class="text-input" type="text" inputmode="decimal" data-field="editAccountBalanceInput" value="' + esc(s.editAccountBalanceInput) + '" style="width:110px;"><button class="btn btn-primary" data-action="save-edit-balance" data-id="' + a.id + '" style="padding:7px 12px;">Salva</button></div>'
-        : '<button data-action="start-edit-balance" data-id="' + a.id + '" style="background:none;border:none;cursor:pointer;padding:0;text-align:left;font-size:19px;font-weight:600;font-family:\'Fraunces\',serif;color:#1E1D1B;">' + fmt(a.balance) + '</button>';
-      return '<div style="border:1px solid #E4E2DC;border-radius:12px;padding:14px 16px;display:flex;flex-direction:column;gap:10px;">' +
+        : '<button data-action="start-edit-balance" data-id="' + a.id + '" style="background:none;border:none;cursor:pointer;padding:0;text-align:left;font-size:19px;font-weight:600;font-family:\'Fraunces\',serif;color:var(--ink);">' + fmt(a.balance) + '</button>';
+      return '<div style="border:1px solid var(--border);border-radius:12px;padding:14px 16px;display:flex;flex-direction:column;gap:10px;">' +
         '<div class="row" style="align-items:flex-start;"><div><div style="font-size:14px;font-weight:600;">' + esc(a.name) + '</div><div class="muted" style="font-size:12px;margin-top:2px;">' + esc(a.bank) + '</div></div>' +
         '<button class="icon-btn" data-action="remove-account" data-id="' + a.id + '" aria-label="Rimuovi conto">' + xIcon() + '</button></div>' +
         balanceBlock +
-        '<label style="display:flex;align-items:center;gap:7px;font-size:12px;color:' + (a.excludeFromTotal ? WARN : '#6B6862') + ';cursor:pointer;"><input type="checkbox" data-field="account-exclude-' + a.id + '" data-action="toggle-exclude" data-id="' + a.id + '" ' + (a.excludeFromTotal ? 'checked' : '') + ' style="margin:0;">' + (a.excludeFromTotal ? 'Escluso dal totale' : 'Incluso nel totale') + '</label>' +
+        '<label style="display:flex;align-items:center;gap:7px;font-size:12px;color:' + (a.excludeFromTotal ? WARN : 'var(--muted)') + ';cursor:pointer;"><input type="checkbox" data-field="account-exclude-' + a.id + '" data-action="toggle-exclude" data-id="' + a.id + '" ' + (a.excludeFromTotal ? 'checked' : '') + ' style="margin:0;">' + (a.excludeFromTotal ? 'Escluso dal totale' : 'Incluso nel totale') + '</label>' +
         '</div>';
     }).join('');
 
@@ -2266,7 +2329,7 @@
       if (recurLabel) subtitleParts.push('↻ ' + recurLabel);
       if (u.endDate) subtitleParts.push('fino al ' + fmtDate(u.endDate));
       return '<div class="list-row"><div style="display:flex;align-items:center;gap:10px;">' +
-        '<span class="badge" style="background:' + (isUrgent ? 'rgba(179,65,58,0.1)' : 'rgba(31,111,92,0.1)') + ';color:' + (isUrgent ? NEGATIVE : ACCENT) + ';">' + (days < 0 ? 'Scaduto' : (days === 0 ? 'Oggi' : days + ' g')) + '</span>' +
+        '<span class="badge" style="background:' + (isUrgent ? 'rgba(var(--negative-rgb),0.1)' : 'rgba(var(--accent-rgb),0.1)') + ';color:' + (isUrgent ? NEGATIVE : ACCENT) + ';">' + (days < 0 ? 'Scaduto' : (days === 0 ? 'Oggi' : days + ' g')) + '</span>' +
         (meta ? avatarHtml(meta, 26) : '') +
         '<div><div style="font-size:14px;font-weight:500;">' + esc(u.label) + '</div><div class="muted" style="font-size:12px;">' + subtitleParts.join(' &middot; ') + '</div></div></div>' +
         '<div style="display:flex;align-items:center;gap:12px;"><div style="font-size:14px;font-weight:600;">' + fmt(u.amount) + '</div><button class="icon-btn" data-action="remove-upcoming" data-id="' + u.id + '" aria-label="Rimuovi pagamento">' + xIcon() + '</button></div></div>';
@@ -2276,9 +2339,9 @@
       var selected = s.newPaymentCategory === c.name;
       var meta = { color: c.color, initials: c.name.trim().slice(0, 2).toUpperCase(), iconD: c.icon && ICONS[c.icon] ? ICONS[c.icon] : null };
       return '<button data-action="pick-payment-category" data-cat="' + esc(c.name) + '" style="background:none;border:none;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:5px;padding:2px;">' +
-        '<div style="width:38px;height:38px;border-radius:50%;background:' + meta.color + ';display:flex;align-items:center;justify-content:center;color:#fff;font-size:12px;font-weight:600;box-shadow:' + (selected ? '0 0 0 3px rgba(30,29,27,0.35)' : 'none') + ';">' +
+        '<div style="width:38px;height:38px;border-radius:50%;background:' + meta.color + ';display:flex;align-items:center;justify-content:center;color:#fff;font-size:12px;font-weight:600;box-shadow:' + (selected ? '0 0 0 3px rgba(var(--ink-rgb),0.35)' : 'none') + ';">' +
         (meta.iconD ? '<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="' + meta.iconD + '" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>' : esc(meta.initials)) +
-        '</div><span style="font-size:10px;color:' + (selected ? '#1E1D1B' : '#6B6862') + ';text-align:center;max-width:60px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + esc(c.name) + '</span></button>';
+        '</div><span style="font-size:10px;color:' + (selected ? 'var(--ink)' : 'var(--muted)') + ';text-align:center;max-width:60px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + esc(c.name) + '</span></button>';
     }).join('');
 
     var accountOptions = '<option value="">Nessun conto</option>' + s.accounts.map(function (a) { return '<option value="' + a.id + '"' + (String(s.newPaymentAccountId) === String(a.id) ? ' selected' : '') + '>' + esc(a.name) + '</option>'; }).join('');
@@ -2328,7 +2391,7 @@
         var changePct = Number(h.changePct || 0);
         var changeFmt = (changePct >= 0 ? '+' : '') + changePct.toFixed(1) + '%';
         if (s.editingHoldingId === h.id) {
-          return '<div style="border:1px solid #E4E2DC;border-radius:12px;padding:14px 16px;display:flex;flex-direction:column;gap:8px;">' +
+          return '<div style="border:1px solid var(--border);border-radius:12px;padding:14px 16px;display:flex;flex-direction:column;gap:8px;">' +
             '<input class="text-input" type="text" data-field="editHoldingName" value="' + esc(s.editHoldingName) + '" placeholder="Nome titolo">' +
             '<div style="display:flex;gap:8px;flex-wrap:wrap;">' +
             '<input class="text-input" type="text" inputmode="decimal" data-field="editHoldingValue" value="' + esc(s.editHoldingValue) + '" placeholder="Valore" style="width:100px;">' +
@@ -2348,17 +2411,17 @@
         if (h.invested != null && Number(h.invested) > 0) {
           var pl = Number(h.value || 0) - Number(h.invested);
           var plPct = pl / Number(h.invested) * 100;
-          plHtml = '<div style="font-size:12px;margin-top:6px;color:#6B6862;">Investito ' + fmt(h.invested) + ' &middot; <span style="font-weight:600;color:' + (pl >= 0 ? ACCENT : NEGATIVE) + ';">' + (pl >= 0 ? '+' : '−') + fmt(Math.abs(pl)) + ' (' + (pl >= 0 ? '+' : '') + plPct.toFixed(1).replace('.', ',') + '%)</span></div>';
+          plHtml = '<div style="font-size:12px;margin-top:6px;color:var(--muted);">Investito ' + fmt(h.invested) + ' &middot; <span style="font-weight:600;color:' + (pl >= 0 ? ACCENT : NEGATIVE) + ';">' + (pl >= 0 ? '+' : '−') + fmt(Math.abs(pl)) + ' (' + (pl >= 0 ? '+' : '') + plPct.toFixed(1).replace('.', ',') + '%)</span></div>';
         }
-        return '<div style="border:1px solid #E4E2DC;border-radius:12px;padding:14px 16px;display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">' +
+        return '<div style="border:1px solid var(--border);border-radius:12px;padding:14px 16px;display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">' +
           '<button data-action="start-edit-holding" data-id="' + h.id + '" style="background:none;border:none;cursor:pointer;padding:0;text-align:left;">' +
-          '<div style="font-size:14px;font-weight:600;color:#1E1D1B;">' + esc(h.name) + (h.ticker ? ' <span class="muted" style="font-weight:400;">' + esc(h.ticker) + '</span>' : '') + '</div><div style="font-size:17px;font-weight:600;margin-top:6px;font-family:\'Fraunces\',serif;color:#1E1D1B;">' + fmt(h.value) + '</div><div style="font-size:13px;font-weight:600;margin-top:2px;color:' + (changePct >= 0 ? ACCENT : NEGATIVE) + ';">' + changeFmt + ' <span class="muted" style="font-weight:400;font-size:11px;">' + (h.priceUpdatedAt ? 'oggi &middot; prezzo del ' + fmtDate(h.priceUpdatedAt) : 'variazione') + '</span></div>' +
+          '<div style="font-size:14px;font-weight:600;color:var(--ink);">' + esc(h.name) + (h.ticker ? ' <span class="muted" style="font-weight:400;">' + esc(h.ticker) + '</span>' : '') + '</div><div style="font-size:17px;font-weight:600;margin-top:6px;font-family:\'Fraunces\',serif;color:var(--ink);">' + fmt(h.value) + '</div><div style="font-size:13px;font-weight:600;margin-top:2px;color:' + (changePct >= 0 ? ACCENT : NEGATIVE) + ';">' + changeFmt + ' <span class="muted" style="font-weight:400;font-size:11px;">' + (h.priceUpdatedAt ? 'oggi &middot; prezzo del ' + fmtDate(h.priceUpdatedAt) : 'variazione') + '</span></div>' +
           plHtml +
           '</button>' +
           '<button class="icon-btn" data-action="remove-holding" data-id="' + h.id + '" aria-label="Rimuovi posizione">' + xIcon() + '</button></div>';
       }).join('');
-      return '<div style="display:flex;flex-direction:column;gap:12px;padding-bottom:16px;border-bottom:1px solid #F0EFEA;">' +
-        '<div class="row"><div style="font-size:14px;font-weight:600;">' + esc(p.name) + ' <span style="font-weight:400;color:#6B6862;">&middot; ' + fmt(subtotal) + '</span></div>' +
+      return '<div style="display:flex;flex-direction:column;gap:12px;padding-bottom:16px;border-bottom:1px solid var(--divider);">' +
+        '<div class="row"><div style="font-size:14px;font-weight:600;">' + esc(p.name) + ' <span style="font-weight:400;color:var(--muted);">&middot; ' + fmt(subtotal) + '</span></div>' +
         (canRemove ? '<button class="icon-btn" data-action="remove-portfolio" data-id="' + p.id + '" aria-label="Rimuovi portafoglio">' + xIcon() + '</button>' : '') + '</div>' +
         '<div class="grid-fit">' + (holdings || '<div class="muted" style="font-size:13px;">Nessuna posizione.</div>') + '</div></div>';
     }).join('');
@@ -2413,11 +2476,11 @@
       var inv = withCost.reduce(function (sum, h) { return sum + Number(h.invested); }, 0);
       var val = withCost.reduce(function (sum, h) { return sum + Number(h.value || 0); }, 0);
       var plTot = val - inv;
-      plSummary = '<div style="font-size:13px;color:#6B6862;margin-top:-8px;">Investito ' + fmt(inv) + ' &middot; ' +
+      plSummary = '<div style="font-size:13px;color:var(--muted);margin-top:-8px;">Investito ' + fmt(inv) + ' &middot; ' +
         '<span style="font-weight:600;color:' + (plTot >= 0 ? ACCENT : NEGATIVE) + ';">' + (plTot >= 0 ? 'Guadagno ' : 'Perdita ') + fmt(Math.abs(plTot)) + ' (' + (plTot >= 0 ? '+' : '−') + Math.abs(plTot / inv * 100).toFixed(1).replace('.', ',') + '%)</span>' +
         (withCost.length < s.portfolio.length ? ' <span style="font-size:11px;">su ' + withCost.length + ' posizioni su ' + s.portfolio.length + '</span>' : '') + '</div>';
     }
-    return '<div class="card"><div class="row"><div class="section-title">Portafogli</div><div style="font-size:13px;color:#6B6862;">Totale: <span style="font-weight:600;color:#1E1D1B;">' + fmt(totalPortfolio) + '</span></div></div>' +
+    return '<div class="card"><div class="row"><div class="section-title">Portafogli</div><div style="font-size:13px;color:var(--muted);">Totale: <span style="font-weight:600;color:var(--ink);">' + fmt(totalPortfolio) + '</span></div></div>' +
       plSummary +
       refreshRow +
       sections +
@@ -2482,6 +2545,16 @@
   document.addEventListener('DOMContentLoaded', function () {
     render();
 
+    // In modalità "Auto" segue live il tema del telefono, anche senza ricaricare la pagina.
+    try {
+      var darkQuery = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)');
+      if (darkQuery && darkQuery.addEventListener) {
+        darkQuery.addEventListener('change', function () {
+          if (state.themePref === 'auto') applyTheme('auto');
+        });
+      }
+    } catch (e) {}
+
     document.addEventListener('click', function (e) {
       var el = e.target.closest('[data-action]');
       if (!el) return;
@@ -2541,6 +2614,7 @@
         case 'confirm-restore-backup': App.confirmRestoreBackup(); break;
         case 'cancel-restore-backup': App.cancelRestoreBackup(); break;
         case 'toggle-reset-confirm': App.toggleResetConfirm(); break;
+        case 'pick-theme': App.pickTheme(el.dataset.theme); break;
         case 'refresh-prices': App.refreshPrices(); break;
         case 'toggle-price-settings': App.togglePriceSettings(); break;
         case 'save-price-key': App.savePriceKey(); break;

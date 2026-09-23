@@ -17,6 +17,7 @@ Per lo stesso motivo: se disinstalli l'app o cancelli i dati del browser, i dati
 - **Mese per mese**: grafico degli ultimi 12 mesi, confronto delle categorie con il mese prima e **budget mensili** per categoria.
 - **Patrimonio netto** (conti + portafogli + crediti − debiti) con **storico mensile** automatico e grafico.
 - **Portafogli** con prezzo di carico (guadagno/perdita) e aggiornamento prezzi: crypto con CoinGecko, ETF europei con Alpha Vantage (ticker tipo `VWCE.DEX`), azioni USA con Twelve Data (convertite in euro).
+- **Aspetto**: 4 temi (Verde, Blu notte, Scuro, Minimal) scelti in fondo alla pagina, sotto "Aspetto". Con "Auto" (l'opzione di default) l'app segue in automatico la modalità scura del telefono, anche dal vivo se la cambi mentre l'app è aperta.
 
 ## Pubblicare un aggiornamento
 
