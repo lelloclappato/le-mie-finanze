@@ -94,12 +94,15 @@
       priceRefreshBusy: false, priceRefreshStatus: '',
 
       showAddTx: false, newTxCategory: '', newTxAmount: '', newTxType: 'uscita', newTxDate: '', newTxNote: '', newTxAccountId: '',
+      editingTxId: null, editTxCategory: '', editTxAmount: '', editTxType: 'uscita', editTxDate: '', editTxNote: '', editTxAccountId: '',
       showImport: false, importBusy: false, importError: '', importSuccess: '', importRows: [],
       showCreateCat: false, managingCategories: false,
       newCatName: '', newCatColor: CATEGORY_PALETTE[0], newCatIcon: '',
       editingCatId: null, editingCatType: null,
+      mergingCatId: null, mergingCatType: null, mergeTargetId: '',
 
-      showResetConfirm: false, resetCodeInput: '', resetError: ''
+      showResetConfirm: false, resetCodeInput: '', resetError: '',
+      backupError: '', backupPreview: null
     };
   }
 
@@ -556,6 +559,10 @@
     setField: function (field, value) {
       state[field] = value;
       if (field === 'newTxType') state.newTxCategory = '';
+      if (field === 'editTxType') {
+        var list = value === 'entrata' ? state.incomeCategories : state.expenseCategories;
+        if (!list.some(function (c) { return c.name === state.editTxCategory; })) state.editTxCategory = list.length ? list[0].name : '';
+      }
       save();
       renderPreserveFocus();
     },
@@ -776,6 +783,36 @@
       }
       update({ transactions: state.transactions.filter(function (t) { return t.id !== id; }), accounts: accounts });
     },
+    startEditTx: function (id) {
+      var t = state.transactions.find(function (x) { return x.id === id; });
+      if (!t) return;
+      update({
+        editingTxId: id, editTxCategory: t.category, editTxAmount: String(t.amount), editTxType: t.type,
+        editTxDate: t.date, editTxNote: t.note || '', editTxAccountId: t.accountId ? String(t.accountId) : ''
+      });
+    },
+    cancelEditTx: function () { update({ editingTxId: null }); },
+    saveEditTx: function (id) {
+      var old = state.transactions.find(function (t) { return t.id === id; });
+      if (!old || !state.editTxCategory || state.editTxAmount === '' || !state.editTxDate) return;
+      var newAmt = numVal(state.editTxAmount) || 0;
+      var newAccountId = state.editTxAccountId ? Number(state.editTxAccountId) : null;
+      var newType = state.editTxType;
+
+      var accounts = state.accounts.map(function (a) {
+        var bal = a.balance;
+        var touched = false;
+        if (a.id === old.accountId) { bal -= (old.type === 'entrata' ? old.amount : -old.amount); touched = true; }
+        if (a.id === newAccountId) { bal += (newType === 'entrata' ? newAmt : -newAmt); touched = true; }
+        return touched ? Object.assign({}, a, { balance: bal }) : a;
+      });
+
+      var transactions = state.transactions.map(function (t) {
+        return t.id === id ? Object.assign({}, t, { category: state.editTxCategory, amount: newAmt, type: newType, date: state.editTxDate, note: state.editTxNote, accountId: newAccountId }) : t;
+      });
+
+      update({ transactions: transactions, accounts: accounts, editingTxId: null });
+    },
 
     toggleCreateCat: function () {
       update({ showCreateCat: !state.showCreateCat, editingCatId: null, editingCatType: null, newCatName: '', newCatColor: CATEGORY_PALETTE[0], newCatIcon: '' });
@@ -793,6 +830,20 @@
       var key = type === 'income' ? 'incomeCategories' : 'expenseCategories';
       var p = {}; p[key] = state[key].filter(function (c) { return c.id != id; });
       update(p);
+    },
+    startMergeCategory: function (id, type) { update({ mergingCatId: id, mergingCatType: type, mergeTargetId: '' }); },
+    cancelMergeCategory: function () { update({ mergingCatId: null, mergingCatType: null, mergeTargetId: '' }); },
+    confirmMergeCategory: function () {
+      if (!state.mergeTargetId || String(state.mergeTargetId) === String(state.mergingCatId)) return;
+      var key = state.mergingCatType === 'income' ? 'incomeCategories' : 'expenseCategories';
+      var list = state[key];
+      var source = list.find(function (c) { return c.id == state.mergingCatId; });
+      var target = list.find(function (c) { return c.id == state.mergeTargetId; });
+      if (!source || !target) return;
+      var transactions = state.transactions.map(function (t) { return t.category === source.name ? Object.assign({}, t, { category: target.name }) : t; });
+      var upcoming = state.upcoming.map(function (u) { return u.category === source.name ? Object.assign({}, u, { category: target.name }) : u; });
+      var partial = {}; partial[key] = list.filter(function (c) { return c.id !== source.id; });
+      update(Object.assign(partial, { transactions: transactions, upcoming: upcoming, mergingCatId: null, mergingCatType: null, mergeTargetId: '' }));
     },
     saveCategory: function () {
       var name = state.newCatName.trim();
@@ -826,6 +877,55 @@
       } catch (e) {}
     },
     printPage: function () { try { window.print(); } catch (e) {} },
+
+    exportBackup: function () {
+      try {
+        var data = {};
+        PERSIST_KEYS.forEach(function (k) { data[k] = state[k]; });
+        var payload = { app: 'le-mie-finanze', version: 1, exportedAt: new Date().toISOString(), data: data };
+        var blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        var d = new Date();
+        a.href = url; a.download = 'le-mie-finanze-backup-' + d.toISOString().slice(0, 10) + '.json';
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      } catch (e) {}
+    },
+    handleBackupFile: function (file) {
+      if (!file) return;
+      update({ backupError: '', backupPreview: null });
+      file.text().then(function (text) {
+        var parsed;
+        try { parsed = JSON.parse(text); } catch (e) { throw new Error('Il file non è un JSON valido.'); }
+        if (!parsed || !parsed.data || !Array.isArray(parsed.data.accounts) || !Array.isArray(parsed.data.transactions)) {
+          throw new Error('Questo file non sembra un backup di Le Mie Finanze.');
+        }
+        update({
+          backupPreview: {
+            data: parsed.data,
+            exportedAt: parsed.exportedAt || null,
+            summary: parsed.data.accounts.length + ' conti, ' + parsed.data.transactions.length + ' movimenti, ' + (parsed.data.portfolio || []).length + ' posizioni'
+          }
+        });
+      }).catch(function (err) {
+        update({ backupError: err.message || 'Errore nella lettura del file.' });
+      });
+    },
+    cancelRestoreBackup: function () { update({ backupPreview: null, backupError: '' }); },
+    confirmRestoreBackup: function () {
+      if (!state.backupPreview) return;
+      var data = state.backupPreview.data;
+      var fresh = defaultState();
+      Object.keys(state).forEach(function (k) { delete state[k]; });
+      Object.assign(state, fresh);
+      PERSIST_KEYS.forEach(function (k) { if (data[k] !== undefined) state[k] = data[k]; });
+      state.marketSymbolsInput = state.marketSymbols;
+      state.backupPreview = null;
+      save();
+      render();
+      renderMarkets();
+    },
 
     toggleResetConfirm: function () { update({ showResetConfirm: !state.showResetConfirm, resetCodeInput: '', resetError: '' }); },
     confirmReset: function () {
@@ -1009,10 +1109,31 @@
     html += renderUpcoming(s, urgentDays, startOfDay);
     html += renderPortfolios(s, totalPortfolio);
     html += '<div style="text-align:center;font-size:12px;color:#A6A39B;padding-top:8px;">I dati vengono salvati sul tuo dispositivo (localStorage), non lasciano il telefono.</div>';
+    html += renderBackupPanel(s);
     html += renderResetPanel(s);
     html += '</div></div>';
 
     document.getElementById('app').innerHTML = html;
+  }
+
+  function renderBackupPanel(s) {
+    var html = '<div class="card">' +
+      '<div class="section-title">Backup</div>' +
+      '<div class="muted" style="font-size:12px;">Esporta un file con tutti i tuoi dati (conti, movimenti, debiti, pagamenti, portafogli, categorie) per non perderli se cambi telefono o cancelli i dati del browser.</div>' +
+      '<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;">' +
+      '<button class="btn btn-primary" data-action="export-backup">Esporta backup (.json)</button>' +
+      '<label class="btn btn-ghost" style="cursor:pointer;">Importa backup<input type="file" accept=".json" data-action="import-backup-file" style="display:none;"></label>' +
+      '</div>';
+    if (s.backupError) html += '<div style="color:' + NEGATIVE + ';font-size:12px;">' + esc(s.backupError) + '</div>';
+    if (s.backupPreview) {
+      html += '<div style="border:1px solid ' + WARN + ';border-radius:10px;padding:14px;display:flex;flex-direction:column;gap:8px;">' +
+        '<div style="font-size:13px;font-weight:600;">Sostituire i dati attuali con questo backup?</div>' +
+        '<div class="muted" style="font-size:12px;">Contiene: ' + esc(s.backupPreview.summary) + (s.backupPreview.exportedAt ? ' &middot; esportato il ' + fmtDate(s.backupPreview.exportedAt) : '') + '. I dati attuali verranno sovrascritti.</div>' +
+        '<div style="display:flex;gap:10px;"><button class="btn btn-dark" data-action="confirm-restore-backup">Sostituisci</button><button class="btn btn-ghost" data-action="cancel-restore-backup">Annulla</button></div>' +
+        '</div>';
+    }
+    html += '</div>';
+    return html;
   }
 
   function renderResetPanel(s) {
@@ -1141,14 +1262,34 @@
       }).join('') + '</div>'
     ) : '';
 
+    var txAccountOptions = function (selectedId) {
+      return '<option value="">Nessun conto</option>' + s.accounts.map(function (a) { return '<option value="' + a.id + '"' + (String(selectedId) === String(a.id) ? ' selected' : '') + '>' + esc(a.name) + '</option>'; }).join('');
+    };
     var txList = periodTx.slice().sort(function (a, b) { return new Date(b.date) - new Date(a.date); }).slice(0, 12).map(function (t) {
+      if (s.editingTxId === t.id) {
+        var editCatList = s.editTxType === 'entrata' ? s.incomeCategories : s.expenseCategories;
+        var editCatOptions = editCatList.map(function (c) { return '<option value="' + esc(c.name) + '"' + (s.editTxCategory === c.name ? ' selected' : '') + '>' + esc(c.name) + '</option>'; }).join('');
+        return '<div class="list-row" style="flex-wrap:wrap;flex-direction:column;align-items:stretch;gap:8px;">' +
+          '<div style="display:flex;gap:8px;flex-wrap:wrap;">' +
+          '<select class="text-input" data-field="editTxType" style="width:90px;"><option value="uscita"' + (s.editTxType === 'uscita' ? ' selected' : '') + '>Uscita</option><option value="entrata"' + (s.editTxType === 'entrata' ? ' selected' : '') + '>Entrata</option></select>' +
+          '<select class="text-input" data-field="editTxCategory" style="width:130px;">' + editCatOptions + '</select>' +
+          '<select class="text-input" data-field="editTxAccountId" style="width:140px;">' + txAccountOptions(s.editTxAccountId) + '</select>' +
+          '</div>' +
+          '<div style="display:flex;gap:8px;flex-wrap:wrap;">' +
+          '<input class="text-input" type="date" data-field="editTxDate" value="' + esc(s.editTxDate) + '" style="width:132px;">' +
+          '<input class="text-input" type="text" inputmode="decimal" data-field="editTxAmount" value="' + esc(s.editTxAmount) + '" style="width:100px;">' +
+          '<input class="text-input" type="text" data-field="editTxNote" value="' + esc(s.editTxNote) + '" placeholder="Nota" style="flex:1 1 140px;">' +
+          '</div>' +
+          '<div style="display:flex;gap:8px;"><button class="btn btn-primary" data-action="save-edit-tx" data-id="' + t.id + '">Salva</button><button class="btn btn-ghost" data-action="cancel-edit-tx">Annulla</button></div>' +
+          '</div>';
+      }
       var meta = catMeta(s.expenseCategories.concat(s.incomeCategories), t.category);
       var amountFmt = (t.type === 'entrata' ? '+' : '-') + fmt(t.amount);
       var color = t.type === 'entrata' ? ACCENT : NEGATIVE;
       var acc = t.accountId ? s.accounts.find(function (a) { return a.id === t.accountId; }) : null;
       var subtitle = fmtDate(t.date) + (acc ? ' &middot; ' + esc(acc.name) : '') + ' &middot; ' + esc(t.note || '—');
-      return '<div class="list-row"><div style="display:flex;align-items:center;gap:10px;">' + avatarHtml(meta, 30) +
-        '<div><div style="font-size:14px;font-weight:500;">' + esc(t.category) + '</div><div class="muted" style="font-size:12px;">' + subtitle + '</div></div></div>' +
+      return '<div class="list-row"><button data-action="start-edit-tx" data-id="' + t.id + '" style="background:none;border:none;cursor:pointer;padding:0;text-align:left;display:flex;align-items:center;gap:10px;">' + avatarHtml(meta, 30) +
+        '<div><div style="font-size:14px;font-weight:500;color:#1E1D1B;">' + esc(t.category) + '</div><div class="muted" style="font-size:12px;">' + subtitle + '</div></div></button>' +
         '<div style="display:flex;align-items:center;gap:12px;"><div style="font-size:14px;font-weight:600;color:' + color + ';">' + amountFmt + '</div>' +
         '<button class="icon-btn" data-action="remove-tx" data-id="' + t.id + '" aria-label="Rimuovi movimento">' + xIcon() + '</button></div></div>';
     }).join('');
@@ -1287,13 +1428,24 @@
     var block = function (title, list, type) {
       var rows = list.map(function (c) {
         var meta = { color: c.color, initials: c.name.trim().slice(0, 2).toUpperCase(), iconD: c.icon && ICONS[c.icon] ? ICONS[c.icon] : null };
+        if (String(s.mergingCatId) === String(c.id) && s.mergingCatType === type) {
+          var otherOptions = list.filter(function (o) { return o.id !== c.id; }).map(function (o) {
+            return '<option value="' + o.id + '"' + (String(s.mergeTargetId) === String(o.id) ? ' selected' : '') + '>' + esc(o.name) + '</option>';
+          }).join('');
+          return '<div class="list-row" style="flex-wrap:wrap;gap:8px;"><span style="font-size:13px;">Unisci "' + esc(c.name) + '" con:</span>' +
+            '<select class="text-input" data-field="mergeTargetId" style="width:140px;"><option value="">Scegli...</option>' + otherOptions + '</select>' +
+            '<button class="btn-link" data-action="confirm-merge-category">Conferma</button>' +
+            '<button class="btn-link" data-action="cancel-merge-category">Annulla</button></div>';
+        }
         return '<div class="list-row"><div style="display:flex;align-items:center;gap:10px;">' + avatarHtml(meta, 30) + '<span style="font-size:13px;">' + esc(c.name) + '</span></div>' +
-          '<div style="display:flex;gap:10px;"><button class="btn-link" data-action="edit-category" data-id="' + c.id + '" data-cattype="' + type + '">Modifica</button>' +
+          '<div style="display:flex;gap:10px;"><button class="btn-link" data-action="start-merge-category" data-id="' + c.id + '" data-cattype="' + type + '">Unisci</button>' +
+          '<button class="btn-link" data-action="edit-category" data-id="' + c.id + '" data-cattype="' + type + '">Modifica</button>' +
           '<button class="btn-link" data-action="remove-category" data-id="' + c.id + '" data-cattype="' + type + '" style="color:' + NEGATIVE + ';">Elimina</button></div></div>';
       }).join('');
       return '<div><div style="font-size:12px;font-weight:600;color:#6B6862;margin-bottom:8px;text-transform:uppercase;letter-spacing:0.03em;">' + title + '</div><div style="display:flex;flex-direction:column;gap:2px;">' + rows + '</div></div>';
     };
     return '<div style="display:flex;flex-direction:column;gap:14px;padding:14px;background:#FFFFFF;border-radius:10px;border:1px solid #E4E2DC;margin-top:10px;">' +
+      '<div class="muted" style="font-size:11px;">"Unisci" sposta tutti i movimenti di una categoria in un\'altra e la elimina: utile per accorpare doppioni (es. "Groceries" e "Spesa").</div>' +
       block('Categorie di uscita', s.expenseCategories, 'expense') + block('Categorie di entrata', s.incomeCategories, 'income') + '</div>';
   }
 
@@ -1571,15 +1723,24 @@
         case 'pick-tx-category': App.pickTxCategory(el.dataset.cat); break;
         case 'add-tx': App.addTx(); break;
         case 'remove-tx': App.removeTx(numId); break;
+        case 'start-edit-tx': App.startEditTx(numId); break;
+        case 'cancel-edit-tx': App.cancelEditTx(); break;
+        case 'save-edit-tx': App.saveEditTx(numId); break;
         case 'toggle-create-cat': App.toggleCreateCat(); break;
         case 'toggle-manage-cats': App.toggleManageCategories(); break;
         case 'pick-cat-color': App.pickCatColor(el.dataset.color); break;
         case 'pick-cat-icon': App.pickCatIcon(el.dataset.icon); break;
         case 'save-category': App.saveCategory(); break;
         case 'edit-category': App.startEditCategory(el.dataset.id, el.dataset.cattype); break;
+        case 'start-merge-category': App.startMergeCategory(el.dataset.id, el.dataset.cattype); break;
+        case 'cancel-merge-category': App.cancelMergeCategory(); break;
+        case 'confirm-merge-category': App.confirmMergeCategory(); break;
         case 'remove-category': App.deleteCategory(el.dataset.id, el.dataset.cattype); break;
         case 'export-csv': App.exportCSV(); break;
         case 'print-page': App.printPage(); break;
+        case 'export-backup': App.exportBackup(); break;
+        case 'confirm-restore-backup': App.confirmRestoreBackup(); break;
+        case 'cancel-restore-backup': App.cancelRestoreBackup(); break;
         case 'toggle-reset-confirm': App.toggleResetConfirm(); break;
         case 'refresh-prices': App.refreshPrices(); break;
         case 'toggle-price-settings': App.togglePriceSettings(); break;
@@ -1612,6 +1773,10 @@
       }
       if (t.type === 'file' && t.dataset && t.dataset.action === 'import-file') {
         if (t.files && t.files[0]) App.handleImportFile(t.files[0]);
+        return;
+      }
+      if (t.type === 'file' && t.dataset && t.dataset.action === 'import-backup-file') {
+        if (t.files && t.files[0]) App.handleBackupFile(t.files[0]);
         return;
       }
       if (t.dataset && t.dataset.importField) {
