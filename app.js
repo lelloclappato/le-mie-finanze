@@ -78,7 +78,7 @@
     ['Vendite online', 'cart'], ['Investimenti', 'moneybag'], ['Vendita titoli', ''], ['Giroconti', ''], ['Altro', '']
   ], 'i').map(function (c) { if (isNeutralDefaultName(c.name, 'entrata')) c.neutral = true; return c; });
 
-  var APP_VERSION = '2.2';
+  var APP_VERSION = '2.3';
   var DATA_VERSION = 2;
   var BACKUP_REMINDER_DAYS = 30;
 
@@ -861,9 +861,12 @@
     },
 
     addAccount: function () {
-      if (!state.newAccountName || state.newAccountBalance === '') return;
+      var name = state.newAccountName.trim();
+      var bank = state.newAccountBank.trim();
+      // Il nome è facoltativo: se manca, si usa la banca (che quindi deve esserci).
+      if ((!name && !bank) || state.newAccountBalance === '') return;
       update({
-        accounts: state.accounts.concat([{ id: uid(), name: state.newAccountName, bank: state.newAccountBank, balance: numVal(state.newAccountBalance) || 0, excludeFromTotal: false }]),
+        accounts: state.accounts.concat([{ id: uid(), name: name || bank, bank: bank, balance: numVal(state.newAccountBalance) || 0, excludeFromTotal: false }]),
         newAccountName: '', newAccountBank: '', newAccountBalance: '', showAddAccount: false
       });
     },
@@ -2264,7 +2267,7 @@
         ? '<div style="display:flex;gap:8px;align-items:center;"><input class="text-input" type="text" inputmode="decimal" data-field="editAccountBalanceInput" value="' + esc(s.editAccountBalanceInput) + '" style="width:110px;"><button class="btn btn-primary" data-action="save-edit-balance" data-id="' + a.id + '" style="padding:7px 12px;">Salva</button></div>'
         : '<button data-action="start-edit-balance" data-id="' + a.id + '" style="background:none;border:none;cursor:pointer;padding:0;text-align:left;font-size:19px;font-weight:600;font-family:\'Fraunces\',serif;color:var(--ink);">' + fmt(a.balance) + '</button>';
       return '<div style="border:1px solid var(--border);border-radius:12px;padding:14px 16px;display:flex;flex-direction:column;gap:10px;">' +
-        '<div class="row" style="align-items:flex-start;"><div><div style="font-size:14px;font-weight:600;">' + esc(a.name) + '</div><div class="muted" style="font-size:12px;margin-top:2px;">' + esc(a.bank) + '</div></div>' +
+        '<div class="row" style="align-items:flex-start;"><div><div style="font-size:14px;font-weight:600;">' + esc(a.name) + '</div>' + (a.bank && a.bank !== a.name ? '<div class="muted" style="font-size:12px;margin-top:2px;">' + esc(a.bank) + '</div>' : '') + '</div>' +
         '<button class="icon-btn" data-action="remove-account" data-id="' + a.id + '" aria-label="Rimuovi conto">' + xIcon() + '</button></div>' +
         balanceBlock +
         '<label style="display:flex;align-items:center;gap:7px;font-size:12px;color:' + (a.excludeFromTotal ? WARN : 'var(--muted)') + ';cursor:pointer;"><input type="checkbox" data-field="account-exclude-' + a.id + '" data-action="toggle-exclude" data-id="' + a.id + '" ' + (a.excludeFromTotal ? 'checked' : '') + ' style="margin:0;">' + (a.excludeFromTotal ? 'Escluso dal totale' : 'Incluso nel totale') + '</label>' +
@@ -2273,8 +2276,8 @@
 
     var addForm = s.showAddAccount ? (
       '<div class="form-box">' +
-      '<input class="text-input" type="text" data-field="newAccountName" value="' + esc(s.newAccountName) + '" placeholder="Nome conto" style="flex:1 1 160px;">' +
       '<input class="text-input" type="text" data-field="newAccountBank" value="' + esc(s.newAccountBank) + '" placeholder="Banca" style="flex:1 1 140px;">' +
+      '<input class="text-input" type="text" data-field="newAccountName" value="' + esc(s.newAccountName) + '" placeholder="Nome conto (opzionale)" style="flex:1 1 160px;">' +
       '<input class="text-input" type="text" inputmode="decimal" data-field="newAccountBalance" value="' + esc(s.newAccountBalance) + '" placeholder="Saldo" style="width:120px;">' +
       '<button class="btn btn-dark" data-action="add-account">Salva</button></div>'
     ) : '';
