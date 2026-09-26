@@ -78,7 +78,7 @@
     ['Vendite online', 'cart'], ['Investimenti', 'moneybag'], ['Vendita titoli', ''], ['Giroconti', ''], ['Altro', '']
   ], 'i').map(function (c) { if (isNeutralDefaultName(c.name, 'entrata')) c.neutral = true; return c; });
 
-  var APP_VERSION = '2.4';
+  var APP_VERSION = '2.5';
   var DATA_VERSION = 2;
   var BACKUP_REMINDER_DAYS = 30;
 
@@ -186,9 +186,56 @@
       }
     } catch (e) {}
     migrate();
+    postDuePayments();
     save();
   })();
   applyTheme(state.themePref); // lo script in index.html lo fa già prima del disegno; questo copre i casi in cui manca
+
+  // Quando un pagamento futuro arriva a scadenza (oggi o prima), lo trasforma da solo in un
+  // movimento vero e proprio tra le uscite, aggiornando il saldo del conto collegato se c'è.
+  // Se è ricorrente, resta comunque tra i "pagamenti futuri" ma con la data spostata alla
+  // prossima scadenza; se non lo è (o la ricorrenza è finita), sparisce da lì perché ormai
+  // è diventato un movimento. Viene controllato una volta ad ogni apertura dell'app.
+  function postDuePayments() {
+    var now = new Date();
+    var startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    var newTx = [];
+    var accounts = state.accounts;
+    var upcoming = [];
+    var posted = false;
+
+    state.upcoming.forEach(function (u) {
+      var recurrence = u.recurrence || 'none';
+      var endDate = u.endDate ? new Date(u.endDate + 'T23:59:59') : null;
+      var d = new Date(u.date);
+      var guard = 0;
+      var alive = true;
+      while (alive && d <= startOfDay && guard < 3000) {
+        var accId = u.accountId || null;
+        newTx.push({
+          id: uid(), category: u.category, amount: Number(u.amount) || 0, type: 'uscita',
+          date: isoFromDate(d), note: 'Aggiunto automaticamente da un pagamento futuro', accountId: accId
+        });
+        if (accId) {
+          accounts = accounts.map(function (a) { return a.id === accId ? Object.assign({}, a, { balance: a.balance - (Number(u.amount) || 0) }) : a; });
+        }
+        posted = true;
+        if (recurrence === 'none' || recurrence === '') { alive = false; break; }
+        var next = advanceDate(d, recurrence, u.customValue, u.customUnit);
+        if (!next) { alive = false; break; }
+        d = next;
+        guard++;
+        if (endDate && d > endDate) { alive = false; }
+      }
+      if (alive) upcoming.push(Object.assign({}, u, { date: isoFromDate(d) }));
+    });
+
+    if (posted) {
+      state.transactions = state.transactions.concat(newTx);
+      state.accounts = accounts;
+      state.upcoming = upcoming;
+    }
+  }
 
   // Aggiorna i dati salvati con versioni precedenti dell'app.
   function migrate() {
