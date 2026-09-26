@@ -78,7 +78,7 @@
     ['Vendite online', 'cart'], ['Investimenti', 'moneybag'], ['Vendita titoli', ''], ['Giroconti', ''], ['Altro', '']
   ], 'i').map(function (c) { if (isNeutralDefaultName(c.name, 'entrata')) c.neutral = true; return c; });
 
-  var APP_VERSION = '2.3';
+  var APP_VERSION = '2.4';
   var DATA_VERSION = 2;
   var BACKUP_REMINDER_DAYS = 30;
 
@@ -134,11 +134,17 @@
       editingAccountId: null, editAccountBalanceInput: '',
       showTransfer: false, transferFrom: '', transferTo: '', transferAmount: '',
 
-      showAddDebt: false, newDebtPerson: '', newDebtAmount: '', newDebtKind: 'devo', newDebtDue: '',
+      showAddDebt: false, newDebtPerson: '', newDebtAmount: '', newDebtKind: 'devo', newDebtDue: '', newDebtExclude: false,
 
       showAddPayment: false, newPaymentLabel: '', newPaymentAmount: '', newPaymentDate: '',
       newPaymentCategory: '', newPaymentRecurrence: 'none',
       newPaymentAccountId: '', newPaymentTime: '', newPaymentEndDate: '', newPaymentCustomValue: '1', newPaymentCustomUnit: 'months',
+
+      editingUpcomingId: null, editPaymentLabel: '', editPaymentAmount: '', editPaymentDate: '',
+      editPaymentCategory: '', editPaymentRecurrence: 'none',
+      editPaymentAccountId: '', editPaymentTime: '', editPaymentEndDate: '', editPaymentCustomValue: '1', editPaymentCustomUnit: 'months',
+
+      showSettings: false,
 
       showAddHolding: false, newHoldingName: '', newHoldingValue: '', newHoldingChange: '', newHoldingPortfolioId: '1',
       newHoldingTicker: '', newHoldingQty: '', newHoldingAssetType: 'stock', newHoldingInvested: '',
@@ -213,8 +219,8 @@
   function computeTotals(s) {
     var acc = s.accounts.filter(function (a) { return !a.excludeFromTotal; }).reduce(function (sum, a) { return sum + Number(a.balance || 0); }, 0);
     var port = s.portfolio.reduce(function (sum, h) { return sum + Number(h.value || 0); }, 0);
-    var debt = s.debts.filter(function (d) { return d.kind === 'devo'; }).reduce(function (sum, d) { return sum + Number(d.amount || 0); }, 0);
-    var cred = s.debts.filter(function (d) { return d.kind === 'mi deve'; }).reduce(function (sum, d) { return sum + Number(d.amount || 0); }, 0);
+    var debt = s.debts.filter(function (d) { return d.kind === 'devo' && !d.excludeFromTotal; }).reduce(function (sum, d) { return sum + Number(d.amount || 0); }, 0);
+    var cred = s.debts.filter(function (d) { return d.kind === 'mi deve' && !d.excludeFromTotal; }).reduce(function (sum, d) { return sum + Number(d.amount || 0); }, 0);
     return { acc: acc, port: port, debt: debt, cred: cred, nw: acc + port + cred - debt };
   }
   function round2(n) { return Math.round((Number(n) || 0) * 100) / 100; }
@@ -901,11 +907,14 @@
     addDebt: function () {
       if (!state.newDebtPerson || state.newDebtAmount === '') return;
       update({
-        debts: state.debts.concat([{ id: uid(), person: state.newDebtPerson, amount: numVal(state.newDebtAmount) || 0, kind: state.newDebtKind, due: state.newDebtDue }]),
-        newDebtPerson: '', newDebtAmount: '', newDebtKind: 'devo', newDebtDue: '', showAddDebt: false
+        debts: state.debts.concat([{ id: uid(), person: state.newDebtPerson, amount: numVal(state.newDebtAmount) || 0, kind: state.newDebtKind, due: state.newDebtDue, excludeFromTotal: !!state.newDebtExclude }]),
+        newDebtPerson: '', newDebtAmount: '', newDebtKind: 'devo', newDebtDue: '', newDebtExclude: false, showAddDebt: false
       });
     },
     removeDebt: function (id) { update({ debts: state.debts.filter(function (d) { return d.id !== id; }) }); },
+    toggleExcludeDebt: function (id) {
+      update({ debts: state.debts.map(function (d) { return d.id === id ? Object.assign({}, d, { excludeFromTotal: !d.excludeFromTotal }) : d; }) });
+    },
 
     addPayment: function () {
       if (!state.newPaymentLabel || state.newPaymentAmount === '' || !state.newPaymentDate) return;
@@ -923,6 +932,31 @@
       });
     },
     removeUpcoming: function (id) { update({ upcoming: state.upcoming.filter(function (u) { return u.id !== id; }) }); },
+    startEditUpcoming: function (id) {
+      var u = state.upcoming.find(function (x) { return x.id === id; });
+      if (!u) return;
+      update({
+        editingUpcomingId: id, editPaymentLabel: u.label, editPaymentAmount: String(u.amount), editPaymentDate: u.date,
+        editPaymentCategory: u.category || '', editPaymentRecurrence: u.recurrence || 'none',
+        editPaymentAccountId: u.accountId ? String(u.accountId) : '', editPaymentTime: u.time || '', editPaymentEndDate: u.endDate || '',
+        editPaymentCustomValue: u.customValue || '1', editPaymentCustomUnit: u.customUnit || 'months'
+      });
+    },
+    cancelEditUpcoming: function () { update({ editingUpcomingId: null }); },
+    saveEditUpcoming: function (id) {
+      if (!state.editPaymentLabel || state.editPaymentAmount === '' || !state.editPaymentDate) return;
+      var upcoming = state.upcoming.map(function (u) {
+        if (u.id !== id) return u;
+        return Object.assign({}, u, {
+          label: state.editPaymentLabel, amount: numVal(state.editPaymentAmount) || 0, date: state.editPaymentDate,
+          category: state.editPaymentCategory, recurrence: state.editPaymentRecurrence,
+          accountId: state.editPaymentAccountId ? Number(state.editPaymentAccountId) : null,
+          time: state.editPaymentTime, endDate: state.editPaymentEndDate,
+          customValue: state.editPaymentCustomValue, customUnit: state.editPaymentCustomUnit
+        });
+      });
+      update({ upcoming: upcoming, editingUpcomingId: null });
+    },
     pickPaymentCategory: function (name) { update({ newPaymentCategory: name }); },
 
     addHolding: function () {
@@ -1381,6 +1415,7 @@
     },
 
     toggleResetConfirm: function () { update({ showResetConfirm: !state.showResetConfirm, resetCodeInput: '', resetError: '' }); },
+    closeSettings: function () { update({ showSettings: false }); },
     pickTheme: function (pref) {
       pref = (pref === 'auto' || THEMES.some(function (t) { return t.id === pref; })) ? pref : 'auto';
       setThemePref(pref);
@@ -1597,13 +1632,27 @@
     html += renderDebts(s);
     html += renderUpcoming(s, urgentDays, startOfDay);
     html += renderPortfolios(s, totalPortfolio);
-    html += '<div style="text-align:center;font-size:12px;color:var(--faint);padding-top:8px;">I dati vengono salvati sul tuo dispositivo (localStorage), non lasciano il telefono. &middot; v' + APP_VERSION + '</div>';
-    html += renderThemePanel(s);
-    html += renderBackupPanel(s);
-    html += renderResetPanel(s);
+    html += '<button type="button" class="settings-link" data-action="toggle" data-field="showSettings">' + gearIcon() + 'Aspetto, backup e altro</button>';
+    html += '<div style="text-align:center;font-size:12px;color:var(--faint);padding-top:0;">I dati vengono salvati sul tuo dispositivo (localStorage), non lasciano il telefono. &middot; v' + APP_VERSION + '</div>';
     html += '</div></div>';
+    html += renderSettingsModal(s);
 
     document.getElementById('app').innerHTML = html;
+  }
+
+  function gearIcon() {
+    return '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" style="flex-shrink:0;"><path d="M12 8.5A3.5 3.5 0 1 0 12 15.5 3.5 3.5 0 1 0 12 8.5 Z M12 2 L12 4.5 M12 19.5 L12 22 M4.2 4.2 L6 6 M18 18 L19.8 19.8 M2 12 L4.5 12 M19.5 12 L22 12 M4.2 19.8 L6 18 M18 6 L19.8 4.2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  }
+
+  function renderSettingsModal(s) {
+    if (!s.showSettings) return '';
+    return '<div class="modal-backdrop">' +
+      '<div class="modal-panel">' +
+      '<div class="modal-header"><div class="section-title">Impostazioni</div><button class="icon-btn" data-action="close-settings" aria-label="Chiudi">' + xIcon() + '</button></div>' +
+      renderThemePanel(s) +
+      renderBackupPanel(s) +
+      renderResetPanel(s) +
+      '</div></div>';
   }
 
   function daysSince(iso) { return iso ? Math.floor((Date.now() - new Date(iso).getTime()) / 86400000) : null; }
@@ -2303,7 +2352,8 @@
   function renderDebts(s) {
     var rows = s.debts.map(function (d) {
       var color = d.kind === 'devo' ? NEGATIVE : ACCENT;
-      return '<div class="list-row"><div><div style="font-size:14px;font-weight:500;">' + (d.kind === 'devo' ? 'Devo a ' : 'Mi deve ') + esc(d.person) + '</div><div class="muted" style="font-size:12px;">Scadenza: ' + (d.due ? fmtDate(d.due) : '—') + '</div></div>' +
+      return '<div class="list-row" style="flex-wrap:wrap;gap:6px;"><div><div style="font-size:14px;font-weight:500;">' + (d.kind === 'devo' ? 'Devo a ' : 'Mi deve ') + esc(d.person) + '</div><div class="muted" style="font-size:12px;">Scadenza: ' + (d.due ? fmtDate(d.due) : '—') + '</div>' +
+        '<label style="display:flex;align-items:center;gap:6px;font-size:11px;color:' + (d.excludeFromTotal ? WARN : 'var(--muted)') + ';cursor:pointer;margin-top:4px;"><input type="checkbox" data-action="toggle-exclude-debt" data-id="' + d.id + '" ' + (d.excludeFromTotal ? 'checked' : '') + ' style="margin:0;">' + (d.excludeFromTotal ? 'Escluso dal totale' : 'Incluso nel totale') + '</label></div>' +
         '<div style="display:flex;align-items:center;gap:12px;"><div style="font-size:14px;font-weight:600;color:' + color + ';">' + fmt(d.amount) + '</div><button class="icon-btn" data-action="remove-debt" data-id="' + d.id + '" aria-label="Rimuovi voce">' + xIcon() + '</button></div></div>';
     }).join('');
     var addForm = s.showAddDebt ? (
@@ -2312,6 +2362,7 @@
       '<input class="text-input" type="text" inputmode="decimal" data-field="newDebtAmount" value="' + esc(s.newDebtAmount) + '" placeholder="Importo" style="width:110px;">' +
       '<select class="text-input" data-field="newDebtKind"><option value="devo"' + (s.newDebtKind === 'devo' ? ' selected' : '') + '>Devo</option><option value="mi deve"' + (s.newDebtKind === 'mi deve' ? ' selected' : '') + '>Mi deve</option></select>' +
       '<input class="text-input" type="date" data-field="newDebtDue" value="' + esc(s.newDebtDue) + '">' +
+      '<label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);cursor:pointer;"><input type="checkbox" data-field="newDebtExclude" data-action="toggle" ' + (s.newDebtExclude ? 'checked' : '') + ' style="margin:0;">Escludi dal totale</label>' +
       '<button class="btn btn-dark" data-action="add-debt">Salva</button></div>'
     ) : '';
     return '<div class="card"><div class="section-title">Debiti e crediti</div><div style="display:flex;flex-direction:column;gap:2px;">' + (rows || '<div class="muted" style="font-size:13px;">Nessun debito o credito registrato.</div>') + '</div>' +
@@ -2319,9 +2370,47 @@
   }
 
   function renderUpcoming(s, urgentDays, startOfDay) {
+    var accountOptionsFor = function (selectedId) {
+      return '<option value="">Nessun conto</option>' + s.accounts.map(function (a) { return '<option value="' + a.id + '"' + (String(selectedId) === String(a.id) ? ' selected' : '') + '>' + esc(a.name) + '</option>'; }).join('');
+    };
+    var recurrenceOptionsFor = function (selectedVal) {
+      return [
+        ['none', 'Non ricorrente'], ['daily', 'Ogni giorno'], ['weekly', 'Ogni settimana'], ['monthly', 'Ogni mese'],
+        ['quarterly', 'Ogni 3 mesi'], ['semiannual', 'Ogni 6 mesi'], ['yearly', 'Ogni anno'], ['custom', 'Personalizzato...']
+      ].map(function (pair) { return '<option value="' + pair[0] + '"' + (selectedVal === pair[0] ? ' selected' : '') + '>' + pair[1] + '</option>'; }).join('');
+    };
+    var categoryOptionsFor = function (selectedName) {
+      return '<option value="">Nessuna categoria</option>' + s.expenseCategories.map(function (c) { return '<option value="' + esc(c.name) + '"' + (selectedName === c.name ? ' selected' : '') + '>' + esc(c.name) + '</option>'; }).join('');
+    };
+
     var sorted = urgentDays.slice().sort(function (a, b) { return a.eff - b.eff; });
     var rows = sorted.map(function (x) {
       var u = x.u, days = x.days;
+      if (s.editingUpcomingId === u.id) {
+        var editCustomRow = s.editPaymentRecurrence === 'custom' ? (
+          '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;"><span class="muted" style="font-size:13px;">Ogni</span>' +
+          '<input class="text-input" type="text" inputmode="decimal" data-field="editPaymentCustomValue" value="' + esc(s.editPaymentCustomValue) + '" style="width:70px;">' +
+          '<select class="text-input" data-field="editPaymentCustomUnit"><option value="days"' + (s.editPaymentCustomUnit === 'days' ? ' selected' : '') + '>Giorni</option><option value="weeks"' + (s.editPaymentCustomUnit === 'weeks' ? ' selected' : '') + '>Settimane</option><option value="months"' + (s.editPaymentCustomUnit === 'months' ? ' selected' : '') + '>Mesi</option></select></div>'
+        ) : '';
+        var editEndDateRow = s.editPaymentRecurrence !== 'none' ? (
+          '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;"><span class="muted" style="font-size:13px;">Fino al (opzionale)</span><input class="text-input" type="date" data-field="editPaymentEndDate" value="' + esc(s.editPaymentEndDate) + '"></div>'
+        ) : '';
+        return '<div class="list-row" style="flex-wrap:wrap;flex-direction:column;align-items:stretch;gap:8px;">' +
+          '<div style="display:flex;gap:8px;flex-wrap:wrap;">' +
+          '<input class="text-input" type="text" data-field="editPaymentLabel" value="' + esc(s.editPaymentLabel) + '" placeholder="Descrizione" style="flex:1 1 160px;">' +
+          '<input class="text-input" type="text" inputmode="decimal" data-field="editPaymentAmount" value="' + esc(s.editPaymentAmount) + '" placeholder="Importo" style="width:100px;">' +
+          '<input class="text-input" type="date" data-field="editPaymentDate" value="' + esc(s.editPaymentDate) + '" style="width:140px;">' +
+          '<input class="text-input" type="time" data-field="editPaymentTime" value="' + esc(s.editPaymentTime) + '" style="width:100px;">' +
+          '</div>' +
+          '<div style="display:flex;gap:8px;flex-wrap:wrap;">' +
+          '<select class="text-input" data-field="editPaymentAccountId" style="width:fit-content;">' + accountOptionsFor(s.editPaymentAccountId) + '</select>' +
+          '<select class="text-input" data-field="editPaymentCategory" style="width:fit-content;">' + categoryOptionsFor(s.editPaymentCategory) + '</select>' +
+          '<select class="text-input" data-field="editPaymentRecurrence" style="width:fit-content;">' + recurrenceOptionsFor(s.editPaymentRecurrence) + '</select>' +
+          '</div>' +
+          editCustomRow + editEndDateRow +
+          '<div style="display:flex;gap:8px;"><button class="btn btn-primary" data-action="save-edit-upcoming" data-id="' + u.id + '">Salva</button><button class="btn btn-ghost" data-action="cancel-edit-upcoming">Annulla</button></div>' +
+          '</div>';
+      }
       var isUrgent = days <= 7;
       var meta = u.category ? catMeta(s.expenseCategories, u.category) : null;
       var acc = u.accountId ? s.accounts.find(function (a) { return a.id === u.accountId; }) : null;
@@ -2331,10 +2420,10 @@
       if (acc) subtitleParts.push(esc(acc.name));
       if (recurLabel) subtitleParts.push('↻ ' + recurLabel);
       if (u.endDate) subtitleParts.push('fino al ' + fmtDate(u.endDate));
-      return '<div class="list-row"><div style="display:flex;align-items:center;gap:10px;">' +
+      return '<div class="list-row"><button data-action="start-edit-upcoming" data-id="' + u.id + '" style="background:none;border:none;cursor:pointer;padding:0;text-align:left;display:flex;align-items:center;gap:10px;">' +
         '<span class="badge" style="background:' + (isUrgent ? 'rgba(var(--negative-rgb),0.1)' : 'rgba(var(--accent-rgb),0.1)') + ';color:' + (isUrgent ? NEGATIVE : ACCENT) + ';">' + (days < 0 ? 'Scaduto' : (days === 0 ? 'Oggi' : days + ' g')) + '</span>' +
         (meta ? avatarHtml(meta, 26) : '') +
-        '<div><div style="font-size:14px;font-weight:500;">' + esc(u.label) + '</div><div class="muted" style="font-size:12px;">' + subtitleParts.join(' &middot; ') + '</div></div></div>' +
+        '<div><div style="font-size:14px;font-weight:500;color:var(--ink);">' + esc(u.label) + '</div><div class="muted" style="font-size:12px;">' + subtitleParts.join(' &middot; ') + '</div></div></button>' +
         '<div style="display:flex;align-items:center;gap:12px;"><div style="font-size:14px;font-weight:600;">' + fmt(u.amount) + '</div><button class="icon-btn" data-action="remove-upcoming" data-id="' + u.id + '" aria-label="Rimuovi pagamento">' + xIcon() + '</button></div></div>';
     }).join('');
 
@@ -2346,13 +2435,6 @@
         (meta.iconD ? '<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="' + meta.iconD + '" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>' : esc(meta.initials)) +
         '</div><span style="font-size:10px;color:' + (selected ? 'var(--ink)' : 'var(--muted)') + ';text-align:center;max-width:60px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + esc(c.name) + '</span></button>';
     }).join('');
-
-    var accountOptions = '<option value="">Nessun conto</option>' + s.accounts.map(function (a) { return '<option value="' + a.id + '"' + (String(s.newPaymentAccountId) === String(a.id) ? ' selected' : '') + '>' + esc(a.name) + '</option>'; }).join('');
-
-    var recurrenceOptions = [
-      ['none', 'Non ricorrente'], ['daily', 'Ogni giorno'], ['weekly', 'Ogni settimana'], ['monthly', 'Ogni mese'],
-      ['quarterly', 'Ogni 3 mesi'], ['semiannual', 'Ogni 6 mesi'], ['yearly', 'Ogni anno'], ['custom', 'Personalizzato...']
-    ].map(function (pair) { return '<option value="' + pair[0] + '"' + (s.newPaymentRecurrence === pair[0] ? ' selected' : '') + '>' + pair[1] + '</option>'; }).join('');
 
     var customRow = s.newPaymentRecurrence === 'custom' ? (
       '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;"><span class="muted" style="font-size:13px;">Ogni</span>' +
@@ -2371,17 +2453,17 @@
       '<input class="text-input" type="text" inputmode="decimal" data-field="newPaymentAmount" value="' + esc(s.newPaymentAmount) + '" placeholder="Importo" style="width:110px;">' +
       '<input class="text-input" type="date" data-field="newPaymentDate" value="' + esc(s.newPaymentDate) + '">' +
       '<input class="text-input" type="time" data-field="newPaymentTime" value="' + esc(s.newPaymentTime) + '" style="width:110px;">' +
-      '<select class="text-input" data-field="newPaymentAccountId" style="width:fit-content;">' + accountOptions + '</select>' +
+      '<select class="text-input" data-field="newPaymentAccountId" style="width:fit-content;">' + accountOptionsFor(s.newPaymentAccountId) + '</select>' +
       '</div>' +
       '<div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:10px;">' +
-      '<select class="text-input" data-field="newPaymentRecurrence">' + recurrenceOptions + '</select>' +
+      '<select class="text-input" data-field="newPaymentRecurrence">' + recurrenceOptionsFor(s.newPaymentRecurrence) + '</select>' +
       '</div>' +
       customRow + endDateRow +
       '<div style="margin-top:10px;"><div class="muted" style="font-size:12px;margin-bottom:8px;">' + (s.newPaymentCategory ? 'Categoria: ' + esc(s.newPaymentCategory) : 'Categoria (opzionale)') + '</div><div style="display:flex;flex-wrap:wrap;gap:10px;">' + catGrid + '</div></div>' +
       '<div style="margin-top:10px;"><button class="btn btn-dark" data-action="add-payment">Salva</button></div></div>'
     ) : '';
 
-    return '<div class="card"><div class="section-title">Pagamenti futuri</div><div style="display:flex;flex-direction:column;gap:2px;">' + (rows || '<div class="muted" style="font-size:13px;">Nessun pagamento in programma.</div>') + '</div>' +
+    return '<div class="card"><div class="section-title">Pagamenti futuri</div><div class="muted" style="font-size:12px;">Tocca un pagamento per modificarlo.</div><div style="display:flex;flex-direction:column;gap:2px;">' + (rows || '<div class="muted" style="font-size:13px;">Nessun pagamento in programma.</div>') + '</div>' +
       '<div><button class="btn btn-primary" data-action="toggle" data-field="showAddPayment">+ Aggiungi pagamento</button>' + addForm + '</div></div>';
   }
 
@@ -2559,6 +2641,7 @@
     } catch (e) {}
 
     document.addEventListener('click', function (e) {
+      if (e.target.classList && e.target.classList.contains('modal-backdrop')) { App.closeSettings(); return; }
       var el = e.target.closest('[data-action]');
       if (!el) return;
       var action = el.dataset.action;
@@ -2578,6 +2661,7 @@
         case 'add-account': App.addAccount(); break;
         case 'remove-account': App.removeAccount(numId); break;
         case 'toggle-exclude': App.toggleExcludeAccount(numId); break;
+        case 'toggle-exclude-debt': App.toggleExcludeDebt(numId); break;
         case 'start-edit-balance': App.startEditBalance(numId); break;
         case 'save-edit-balance': App.saveEditBalance(numId); break;
         case 'do-transfer': App.doTransfer(); break;
@@ -2585,6 +2669,9 @@
         case 'remove-debt': App.removeDebt(numId); break;
         case 'add-payment': App.addPayment(); break;
         case 'remove-upcoming': App.removeUpcoming(numId); break;
+        case 'start-edit-upcoming': App.startEditUpcoming(numId); break;
+        case 'cancel-edit-upcoming': App.cancelEditUpcoming(); break;
+        case 'save-edit-upcoming': App.saveEditUpcoming(numId); break;
         case 'pick-payment-category': App.pickPaymentCategory(el.dataset.cat); break;
         case 'add-holding': App.addHolding(); break;
         case 'remove-holding': App.removeHolding(numId); break;
@@ -2617,6 +2704,7 @@
         case 'confirm-restore-backup': App.confirmRestoreBackup(); break;
         case 'cancel-restore-backup': App.cancelRestoreBackup(); break;
         case 'toggle-reset-confirm': App.toggleResetConfirm(); break;
+        case 'close-settings': App.closeSettings(); break;
         case 'pick-theme': App.pickTheme(el.dataset.theme); break;
         case 'refresh-prices': App.refreshPrices(); break;
         case 'toggle-price-settings': App.togglePriceSettings(); break;
