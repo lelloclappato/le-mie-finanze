@@ -78,7 +78,7 @@
     ['Vendite online', 'cart'], ['Investimenti', 'moneybag'], ['Vendita titoli', ''], ['Giroconti', ''], ['Altro', '']
   ], 'i').map(function (c) { if (isNeutralDefaultName(c.name, 'entrata')) c.neutral = true; return c; });
 
-  var APP_VERSION = '2.5';
+  var APP_VERSION = '2.6';
   var DATA_VERSION = 2;
   var BACKUP_REMINDER_DAYS = 30;
 
@@ -171,6 +171,8 @@
   }
 
   var RESET_CODE = '20831';
+  // Caselle il cui valore cambia subito quello che si vede altrove nella pagina.
+  var LIVE_FIELDS = { customFrom: true, customTo: true };
 
   var state = defaultState();
 
@@ -2768,11 +2770,23 @@
 
     document.addEventListener('input', function (e) {
       var t = e.target;
-      if (t.dataset && t.dataset.importField && t.tagName !== 'SELECT') {
+      if (!t.dataset) return;
+      // Mentre si scrive in una casella NON si ridisegna la pagina: ricostruire tutto ad ogni
+      // tasto distruggeva e ricreava la casella stessa, e su telefono la tastiera perdeva lettere.
+      // Il valore viene solo memorizzato; la pagina si ridisegna alla prossima azione (Salva, ecc.).
+      var typing = t.tagName === 'TEXTAREA' || (t.tagName === 'INPUT' && t.type !== 'checkbox' && t.type !== 'file');
+      if (t.dataset.importField && t.tagName !== 'SELECT') {
+        if (typing && state.importRows[Number(t.dataset.idx)]) {
+          var rows = state.importRows.slice(), i = Number(t.dataset.idx), upd = Object.assign({}, rows[i]);
+          upd[t.dataset.importField] = t.value; rows[i] = upd; state.importRows = rows;
+          return;
+        }
         App.setImportField(Number(t.dataset.idx), t.dataset.importField, t.value);
         return;
       }
-      if (t.dataset && t.dataset.field && t.type !== 'checkbox') App.setField(t.dataset.field, t.value);
+      if (!t.dataset.field || t.type === 'checkbox') return;
+      if (typing && !LIVE_FIELDS[t.dataset.field]) { state[t.dataset.field] = t.value; return; }
+      App.setField(t.dataset.field, t.value);
     });
     document.addEventListener('change', function (e) {
       var t = e.target;
