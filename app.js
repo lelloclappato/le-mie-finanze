@@ -78,7 +78,7 @@
     ['Vendite online', 'cart'], ['Investimenti', 'moneybag'], ['Vendita titoli', ''], ['Giroconti', ''], ['Altro', '']
   ], 'i').map(function (c) { if (isNeutralDefaultName(c.name, 'entrata')) c.neutral = true; return c; });
 
-  var APP_VERSION = '2.6';
+  var APP_VERSION = '2.7';
   var DATA_VERSION = 2;
   var BACKUP_REMINDER_DAYS = 30;
 
@@ -127,7 +127,7 @@
       monthViewKey: '', showBudgets: false, showAddHistory: false, newHistoryMonth: '', newHistoryValue: '',
       updateReady: false,
 
-      period: 'mese', customFrom: '', customTo: '', txCategoryFilter: '',
+      period: 'mese', periodOffset: 0, txShowAll: false, customFrom: '', customTo: '', txCategoryFilter: '',
       editGoal: false, goalTargetInput: '', goalCurrentInput: '',
 
       showAddAccount: false, newAccountName: '', newAccountBank: '', newAccountBalance: '',
@@ -891,7 +891,14 @@
     },
     setChecked: function (field, checked) { var p = {}; p[field] = checked; update(p); },
     toggle: toggle,
-    pickPeriod: function (key) { update({ period: key }); },
+    pickPeriod: function (key) { update({ period: key, periodOffset: 0, txShowAll: false }); },
+    // Sposta il periodo mostrato: -1 = quello prima (ieri, settimana scorsa...), +1 = quello dopo. Mai oltre oggi.
+    shiftPeriod: function (delta) {
+      if (state.period === 'custom') return;
+      var next = Math.min(0, (state.periodOffset || 0) + delta);
+      if (next === (state.periodOffset || 0)) return;
+      update({ periodOffset: next, txShowAll: false, editingTxId: null });
+    },
     pickMonth: function (key) { update({ monthViewKey: key }); },
     addHistory: function () {
       var m = state.newHistoryMonth, v = numVal(state.newHistoryValue);
@@ -1646,6 +1653,11 @@
     };
     var rangeStart = s.period === 'custom' ? (s.customFrom ? new Date(s.customFrom) : new Date(2000, 0, 1)) : (ranges[s.period] || ranges.mese);
     var rangeEnd = s.period === 'custom' && s.customTo ? new Date(s.customTo + 'T23:59:59') : new Date(now.getTime() + 86400000);
+    var off = s.period === 'custom' ? 0 : (s.periodOffset || 0);
+    if (off < 0) {
+      var pr = shiftedRange(ranges[s.period] ? s.period : 'mese', off, startOfDay);
+      rangeStart = pr.start; rangeEnd = pr.end;
+    }
 
     var curMonth = monthKey(now);
     var monthTx = s.transactions.filter(function (t) { return String(t.date).slice(0, 7) === curMonth && !isNeutral(t); });
@@ -1933,10 +1945,22 @@
     ) : '';
     var txSource = s.txCategoryFilter ? periodTx.filter(function (t) { return t.category === s.txCategoryFilter; }) : periodTx;
 
+    var TX_PAGE = 100;
+    var txMore = (!s.txShowAll && txSource.length > TX_PAGE)
+      ? '<div style="text-align:center;padding:10px 0 2px;"><button class="btn btn-ghost" data-action="toggle" data-field="txShowAll">Mostra tutti i ' + txSource.length + ' movimenti</button></div>' : '';
+    var txCount = txSource.length ? '<div class="muted" style="font-size:12px;">' + txSource.length + (txSource.length === 1 ? ' movimento' : ' movimenti') + '</div>' : '';
+    var off = s.periodOffset || 0;
+    var navBtn = function (delta, label, disabled, aria) {
+      return '<button class="btn btn-ghost" data-action="shift-period" data-delta="' + delta + '" aria-label="' + aria + '"' + (disabled ? ' disabled' : '') + ' style="padding:6px 14px;font-size:16px;line-height:1;' + (disabled ? 'opacity:0.35;cursor:default;' : '') + '">' + label + '</button>';
+    };
+    var periodNav = s.period === 'custom' ? '' :
+      '<div class="row" style="gap:8px;">' + navBtn(-1, '‹', false, 'Periodo precedente') +
+      '<div style="text-align:center;flex:1;"><div style="font-size:14px;font-weight:600;">' + esc(periodNavLabel(s.period, off)) + '</div>' + txCount + '</div>' +
+      navBtn(1, '›', off >= 0, 'Periodo successivo') + '</div>';
     var txAccountOptions = function (selectedId) {
       return '<option value="">Nessun conto</option>' + s.accounts.map(function (a) { return '<option value="' + a.id + '"' + (String(selectedId) === String(a.id) ? ' selected' : '') + '>' + esc(a.name) + '</option>'; }).join('');
     };
-    var txList = txSource.slice().sort(function (a, b) { return new Date(b.date) - new Date(a.date); }).slice(0, s.txCategoryFilter ? 200 : 12).map(function (t) {
+    var txList = txSource.slice().sort(function (a, b) { return new Date(b.date) - new Date(a.date); }).slice(0, s.txShowAll ? txSource.length : TX_PAGE).map(function (t) {
       if (s.editingTxId === t.id) {
         var editCatList = s.editTxType === 'entrata' ? s.incomeCategories : s.expenseCategories;
         var editCatOptions = editCatList.map(function (c) { return '<option value="' + esc(c.name) + '"' + (s.editTxCategory === c.name ? ' selected' : '') + '>' + esc(c.name) + '</option>'; }).join('');
@@ -2000,12 +2024,12 @@
       '</div>'
     ) : '';
 
-    return '<div class="card">' +
+    return '<div class="card" data-swipe="period">' +
       '<div class="row" style="flex-wrap:wrap;"><div class="section-title">Entrate e uscite</div>' +
-      '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;max-width:100%;"><div style="display:flex;gap:4px;background:var(--surface-2);padding:4px;border-radius:10px;max-width:100%;overflow-x:auto;">' + periodBtns + '</div>' +
+      '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;max-width:100%;"><div data-noswipe="1" style="display:flex;gap:4px;background:var(--surface-2);padding:4px;border-radius:10px;max-width:100%;overflow-x:auto;">' + periodBtns + '</div>' +
       '<button class="btn btn-ghost" data-action="toggle" data-field="showImport">Importa</button><button class="btn btn-ghost" data-action="export-csv">Esporta CSV</button><button class="btn btn-ghost" data-action="print-page">Stampa / PDF</button></div></div>' +
       renderImportPanel(s) +
-      customRange +
+      customRange + periodNav +
       '<div class="grid-fit" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr));">' +
       '<div style="background:var(--surface-2);border-radius:12px;padding:14px 16px;"><div class="muted" style="font-size:12px;">Entrate</div><div style="font-size:19px;font-weight:600;color:' + ACCENT + ';margin-top:4px;">' + fmt(periodIncome) + '</div></div>' +
       '<div style="background:var(--surface-2);border-radius:12px;padding:14px 16px;"><div class="muted" style="font-size:12px;">Uscite</div><div style="font-size:19px;font-weight:600;color:' + NEGATIVE + ';margin-top:4px;">' + fmt(periodExpense) + '</div></div>' +
@@ -2018,7 +2042,7 @@
       '</div>' +
       topCatsHtml +
       filterNotice +
-      '<div style="display:flex;flex-direction:column;gap:2px;border-top:1px solid var(--border);padding-top:10px;">' + (txList || '<div class="muted" style="font-size:13px;padding:10px 4px;">Nessun movimento in questo periodo.</div>') + '</div>' +
+      '<div style="display:flex;flex-direction:column;gap:2px;border-top:1px solid var(--border);padding-top:10px;">' + (txList || '<div class="muted" style="font-size:13px;padding:10px 4px;">Nessun movimento in questo periodo.</div>') + txMore + '</div>' +
       '<div><button class="btn btn-primary" data-action="toggle" data-field="showAddTx">+ Aggiungi movimento</button>' + addTxForm + '</div>' +
       '</div>';
   }
@@ -2028,6 +2052,32 @@
     var now = new Date(), keys = [];
     for (var i = n - 1; i >= 0; i--) keys.push(monthKey(new Date(now.getFullYear(), now.getMonth() - i, 1)));
     return keys;
+  }
+  // Inizio e fine di un periodo passato (off < 0): giorno, settimana (7 giorni), mese o anno.
+  function shiftedRange(period, off, startOfDay) {
+    var y = startOfDay.getFullYear(), m = startOfDay.getMonth(), d = startOfDay.getDate(), start, next;
+    if (period === 'giorno') { start = new Date(y, m, d + off); next = new Date(y, m, d + off + 1); }
+    else if (period === 'settimana') { start = new Date(y, m, d - 6 + off * 7); next = new Date(y, m, d + 1 + off * 7); }
+    else if (period === 'anno') { start = new Date(y + off, 0, 1); next = new Date(y + off + 1, 0, 1); }
+    else { start = new Date(y, m + off, 1); next = new Date(y, m + off + 1, 1); }
+    return { start: start, end: new Date(next.getTime() - 1) };
+  }
+  function periodNavLabel(period, off) {
+    var now = new Date(), sod = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    var cap = function (t) { return t.charAt(0).toUpperCase() + t.slice(1); };
+    var short = function (dt) { return dt.toLocaleDateString('it-IT', { day: 'numeric', month: 'short' }).replace('.', ''); };
+    if (period === 'giorno') {
+      if (off === 0) return 'Oggi';
+      if (off === -1) return 'Ieri';
+      return cap(new Date(sod.getFullYear(), sod.getMonth(), sod.getDate() + off).toLocaleDateString('it-IT', { weekday: 'short', day: 'numeric', month: 'short' }).replace(/\./g, ''));
+    }
+    if (period === 'settimana') {
+      if (off === 0) return 'Ultimi 7 giorni';
+      var r = shiftedRange('settimana', off, sod);
+      return short(r.start) + ' – ' + short(r.end);
+    }
+    if (period === 'anno') return String(sod.getFullYear() + off);
+    return cap(new Date(sod.getFullYear(), sod.getMonth() + off, 1).toLocaleDateString('it-IT', { month: 'long', year: 'numeric' }));
   }
   function prevMonthKey(key) {
     var y = parseInt(key.slice(0, 4), 10), m = parseInt(key.slice(5, 7), 10);
@@ -2699,6 +2749,7 @@
       switch (action) {
         case 'toggle': App.toggle(el.dataset.field); break;
         case 'pick-period': App.pickPeriod(el.dataset.key); break;
+        case 'shift-period': App.shiftPeriod(Number(el.dataset.delta)); break;
         case 'pick-month': App.pickMonth(el.dataset.key); break;
         case 'toggle-budgets': App.toggleBudgets(); break;
         case 'add-history': App.addHistory(); break;
@@ -2767,6 +2818,24 @@
         case 'confirm-import': App.confirmImport(); break;
       }
     });
+
+    // Scorrimento col dito sulla scheda "Entrate e uscite": verso sinistra = periodo precedente
+    // (ieri, settimana scorsa...), verso destra = periodo successivo. Solo gesti chiaramente orizzontali.
+    var swipe = null;
+    document.addEventListener('touchstart', function (e) {
+      swipe = null;
+      if (e.touches.length !== 1 || !e.target.closest) return;
+      if (!e.target.closest('[data-swipe="period"]') || e.target.closest('input, select, textarea, [data-noswipe]')) return;
+      swipe = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+    }, { passive: true });
+    document.addEventListener('touchend', function (e) {
+      if (!swipe || !e.changedTouches.length) return;
+      var dx = e.changedTouches[0].clientX - swipe.x, dy = e.changedTouches[0].clientY - swipe.y;
+      swipe = null;
+      if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 2) return;
+      App.shiftPeriod(dx < 0 ? -1 : 1);
+    }, { passive: true });
+    document.addEventListener('touchcancel', function () { swipe = null; }, { passive: true });
 
     document.addEventListener('input', function (e) {
       var t = e.target;
