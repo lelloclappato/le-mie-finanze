@@ -2,7 +2,8 @@
 // Strategia: i file dell'app arrivano SEMPRE dalla rete quando c'è connessione (così ogni
 // modifica pubblicata su GitHub compare alla prima apertura), la cache serve solo offline.
 // Il numero va cambiato solo quando si modifica questo file.
-const CACHE_NAME = 'le-mie-finanze-v3';
+const PREFIX = 'le-mie-finanze-';
+const CACHE_NAME = PREFIX + 'v4';
 const ASSETS = [
   './',
   './index.html',
@@ -28,9 +29,12 @@ self.addEventListener('install', (event) => {
 });
 
 self.addEventListener('activate', (event) => {
+  // Si cancellano solo le cache vecchie di QUESTA app. La memoria delle cache è condivisa con le altre
+  // app pubblicate su lelloclappato.github.io (Abitudini, I miei libri…): le loro non vanno toccate,
+  // altrimenti a ogni aggiornamento di Finanze smetterebbero di funzionare senza connessione.
   event.waitUntil(
     caches.keys().then((keys) =>
-      Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k)))
+      Promise.all(keys.filter((k) => k.startsWith(PREFIX) && k !== CACHE_NAME).map((k) => caches.delete(k)))
     ).then(() => self.clients.claim())
   );
 });
