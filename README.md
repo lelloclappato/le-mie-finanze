@@ -21,7 +21,7 @@ Per lo stesso motivo: se disinstalli l'app o cancelli i dati del browser, i dati
 
 ## Pubblicare un aggiornamento
 
-Basta caricare i file modificati su GitHub: dopo 1–2 minuti (il tempo che GitHub Pages pubblica) l'app sul telefono usa la nuova versione alla prima apertura con internet. Offline usa l'ultima versione salvata. Se modifichi `sw.js`, cambia anche il suo `CACHE_NAME` (es. `v3` → `v4`). Il numero di versione visibile in fondo alla pagina è `APP_VERSION` in `app.js`.
+Basta caricare i file modificati su GitHub: dopo 1–2 minuti (il tempo che GitHub Pages pubblica) l'app sul telefono usa la nuova versione alla prima apertura con internet. Offline usa l'ultima versione salvata. Se modifichi `sw.js`, cambia anche il suo `CACHE_NAME` (es. `v4` → `v5`). Il numero di versione visibile in fondo alla pagina è `APP_VERSION` in `app.js`.
 
 ## Come installarla sul telefono
 
@@ -33,3 +33,26 @@ Basta caricare i file modificati su GitHub: dopo 1–2 minuti (il tempo che GitH
 ## Sviluppo locale
 
 Non serve alcun build. Basta servire la cartella con un qualsiasi server statico (per il service worker serve un'origine `http://localhost` o HTTPS, non `file://`), ad esempio con l'estensione "Live Server" di VS Code, oppure con `npx serve` se hai Node installato.
+
+## Telefono e computer: la sincronizzazione
+
+In *Aspetto, backup e altro* c'è **Accedi con Google**: con lo stesso account sul telefono
+e sul computer i dati restano uguali. Funziona così:
+
+- i dati vanno in un file nella **cartella nascosta dell'app sul tuo Google Drive** (`appDataFolder`): non compare tra i file
+  del Drive e l'app non può vedere nient'altro. Il permesso chiesto è solo `drive.appdata` (più `email`, per mostrare l'account);
+- si sincronizza all'apertura, qualche secondo dopo ogni modifica, tornando sull'app e quando torna la connessione;
+- l'accesso fatto dal browser dura **un'ora**: dopo, in Oggi compare **Sincronizza** e basta un tocco. Intanto i dati restano
+  salvati sul dispositivo, come sempre;
+- ogni elemento (conto, movimento, debito, pagamento, posizione, categoria) ha la sua data di modifica: unendo due copie vince la più recente,
+  e una cosa eliminata non "risorge" dall'altro dispositivo. La prima volta che un dispositivo con dati suoi si collega,
+  l'app chiede se unirli a quelli dell'account o usare solo quelli dell'account;
+- restano solo sul dispositivo: le chiavi API, il giorno dell'ultimo backup e la versione dei dati;
+- i pagamenti futuri registrati in automatico hanno un id che dipende solo dal pagamento e dal giorno: se telefono e
+  computer li registrano tutti e due, diventano un solo movimento. Il saldo di un conto modificato su due dispositivi
+  mentre uno è senza connessione tiene l'ultima modifica.
+
+Il codice è in `sincro/` (uguale in tutte le mie app: `registro.js` capisce cosa è cambiato e unisce le copie,
+`google.js` fa l'accesso, `drive.js` legge e scrive il file, `sincro.js` mette insieme tutto) e in `sincronizzazione.js`
+(cosa si sincronizza in questa app). L'ID client OAuth del progetto Google Cloud "Le mie app" è in `sincronizzazione.js`:
+è pubblico. Il *client secret* non serve e non va mai messo nel codice.

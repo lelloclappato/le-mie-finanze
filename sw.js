@@ -3,12 +3,17 @@
 // modifica pubblicata su GitHub compare alla prima apertura), la cache serve solo offline.
 // Il numero va cambiato solo quando si modifica questo file.
 const PREFIX = 'le-mie-finanze-';
-const CACHE_NAME = PREFIX + 'v4';
+const CACHE_NAME = PREFIX + 'v5';
 const ASSETS = [
   './',
   './index.html',
   './style.css',
   './app.js',
+  './sincronizzazione.js',
+  './sincro/sincro.js',
+  './sincro/registro.js',
+  './sincro/google.js',
+  './sincro/drive.js',
   './manifest.json',
   './icons/icon-192.png',
   './icons/icon-512.png'

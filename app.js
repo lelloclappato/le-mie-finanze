@@ -78,7 +78,7 @@
     ['Vendite online', 'cart'], ['Investimenti', 'moneybag'], ['Vendita titoli', ''], ['Giroconti', ''], ['Altro', '']
   ], 'i').map(function (c) { if (isNeutralDefaultName(c.name, 'entrata')) c.neutral = true; return c; });
 
-  var APP_VERSION = '2.7';
+  var APP_VERSION = '2.8';
   var DATA_VERSION = 2;
   var BACKUP_REMINDER_DAYS = 30;
 
@@ -214,8 +214,10 @@
       var alive = true;
       while (alive && d <= startOfDay && guard < 3000) {
         var accId = u.accountId || null;
+        // L'id dipende solo dal pagamento e dal giorno: se telefono e computer registrano lo stesso pagamento
+        // (ognuno all'apertura), con la sincronizzazione diventano un solo movimento invece di due.
         newTx.push({
-          id: uid(), category: u.category, amount: Number(u.amount) || 0, type: 'uscita',
+          id: 'auto-' + u.id + '-' + isoFromDate(d), category: u.category, amount: Number(u.amount) || 0, type: 'uscita',
           date: isoFromDate(d), note: 'Aggiunto automaticamente da un pagamento futuro', accountId: accId
         });
         if (accId) {
@@ -299,8 +301,35 @@
       var data = {};
       PERSIST_KEYS.forEach(function (k) { data[k] = state[k]; });
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-    } catch (e) {}
+    } catch (e) { return; }
+    try { dopoSalvataggio(); } catch (e) { /* la sincronizzazione non deve mai impedire di salvare */ }
   }
+
+  // ---------- ponte con la sincronizzazione (sincronizzazione.js, un modulo a parte) ----------
+  // La sincronizzazione legge e sostituisce solo i dati salvati (PERSIST_KEYS), mai lo stato dello schermo
+  // (moduli aperti, testo che stai scrivendo). Le chiavi API restano sempre e solo su questo dispositivo.
+  var dopoSalvataggio = function () {};
+  var sincro = null; // impostato da sincronizzazione.js con collega(), sincronizza(), scollega(), stato(), daInviare()
+  window.LeMieFinanze = {
+    leggi: function () {
+      var d = {};
+      PERSIST_KEYS.forEach(function (k) { d[k] = state[k]; });
+      return d;
+    },
+    scrivi: function (d) {
+      if (!d || !Array.isArray(d.accounts) || !Array.isArray(d.transactions)) return;
+      PERSIST_KEYS.forEach(function (k) {
+        if (SECRET_KEYS.indexOf(k) > -1 || k === 'lastBackupAt' || k === 'dataVersion') return;
+        if (d[k] !== undefined) state[k] = d[k];
+      });
+      migrate();
+      save();
+      renderPreserveFocus();
+    },
+    quandoSalva: function (fn) { dopoSalvataggio = fn; },
+    collegaSincro: function (s) { sincro = s; renderPreserveFocus(); },
+    ridisegna: function () { if (document.readyState !== 'loading') renderPreserveFocus(); }
+  };
 
   // ---------- helpers ----------
   function esc(str) {
@@ -1683,6 +1712,7 @@
     var html = '';
     html += '<div class="page"><div class="wrap">';
     html += renderUpdateBanner(s);
+    html += renderSyncBanner();
     html += renderHeader(s, netWorth, totalAccounts, totalPortfolio, totalDebt, totalCredit, urgent.length, urgentTotal, goalPct);
     html += renderBackupReminder(s);
     html += renderInsights(s, totalAccounts, totalDebt, monthlyIncome, monthlyExpense, isNeutral);
@@ -1711,6 +1741,7 @@
       '<div class="modal-panel">' +
       '<div class="modal-header"><div class="section-title">Impostazioni</div><button class="icon-btn" data-action="close-settings" aria-label="Chiudi">' + xIcon() + '</button></div>' +
       renderThemePanel(s) +
+      renderSyncPanel(s) +
       renderBackupPanel(s) +
       renderResetPanel(s) +
       '</div></div>';
@@ -1756,6 +1787,43 @@
       '<div class="muted" style="font-size:12px;">' + esc(label) + '</div>' +
       '<div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center;">' + buttons + '</div>' +
       '</div>';
+  }
+
+  // Telefono e computer: sincronizzazione con Google Drive (vedi sincronizzazione.js)
+  function syncWhen(ms) {
+    var d = new Date(ms), now = new Date();
+    var day = function (x) { return new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime(); };
+    var g = Math.round((day(now) - day(d)) / 86400000);
+    var ora = pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+    return (g === 0 ? 'oggi' : g === 1 ? 'ieri' : 'il ' + d.getDate() + '/' + (d.getMonth() + 1)) + ' alle ' + ora;
+  }
+  function renderSyncPanel(s) {
+    if (!sincro || !sincro.disponibile) return '';
+    var st = sincro.stato();
+    var html = '<div class="card"><div class="section-title">Telefono e computer</div>';
+    if (st.fase === 'spento') {
+      html += '<div class="muted" style="font-size:12px;">Accedi con Google per avere gli stessi conti, movimenti e portafogli sul telefono e sul computer. I dati vanno in una cartella nascosta del tuo Google Drive, riservata a queste app: non vedono gli altri tuoi file. Le chiavi API restano su questo dispositivo.</div>' +
+        '<div><button class="btn btn-primary" data-action="sync-connect">Accedi con Google</button></div>';
+    } else {
+      var riga = st.fase === 'in-corso' ? 'Sincronizzo…'
+        : st.fase === 'errore' ? esc(st.errore)
+        : st.fase === 'da-riconnettere' ? 'L\'accesso a Google è scaduto (dura un\'ora)' + (sincro.daInviare() ? ': ci sono modifiche da inviare' : '') + '.'
+        : st.ultima ? 'Sincronizzato ' + syncWhen(st.ultima) + '.' : '';
+      if (st.email) html += '<div class="muted" style="font-size:12px;">Collegato come <strong>' + esc(st.email) + '</strong>. Usa lo stesso account sugli altri dispositivi.</div>';
+      if (riga) html += '<div style="font-size:13px;font-weight:600;" role="status">' + riga + '</div>';
+      html += '<div class="muted" style="font-size:12px;">I saldi dei conti si uniscono conto per conto: se cambi lo stesso conto su due dispositivi mentre uno è senza connessione, resta l\'ultima modifica. Con la connessione attiva si allineano da soli dopo pochi secondi.</div>' +
+        '<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;">' +
+        '<button class="btn btn-dark" data-action="sync-now"' + (st.fase === 'in-corso' ? ' disabled' : '') + '>Sincronizza adesso</button>' +
+        '<button class="btn-link" data-action="sync-disconnect">Scollega questo dispositivo</button></div>';
+    }
+    return html + '</div>';
+  }
+  // in cima alla pagina, quando l'accesso a Google è scaduto
+  function renderSyncBanner() {
+    if (!sincro || !sincro.disponibile || sincro.stato().fase !== 'da-riconnettere') return '';
+    return '<div class="card" style="flex-direction:row;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;padding:12px 16px;border-style:dashed;">' +
+      '<div style="font-size:13px;">' + (sincro.daInviare() ? 'Hai modifiche da sincronizzare.' : 'Sincronizza per vedere le novità dagli altri dispositivi.') + '</div>' +
+      '<button class="btn btn-dark" data-action="sync-now">Sincronizza</button></div>';
   }
 
   function renderBackupPanel(s) {
@@ -2801,6 +2869,12 @@
         case 'print-page': App.printPage(); break;
         case 'export-backup': App.exportBackup(); break;
         case 'reload-app': window.location.reload(); break;
+        case 'sync-connect': case 'sync-now':
+          if (sincro) sincro.collega().then(function (st) { if (st.errore) alert(st.errore); renderPreserveFocus(); });
+          break;
+        case 'sync-disconnect':
+          if (sincro && confirm('Scollegare questo dispositivo da Google? I dati restano qui e sul tuo Drive, ma smettono di sincronizzarsi qui.')) sincro.scollega().then(renderPreserveFocus);
+          break;
         case 'confirm-restore-backup': App.confirmRestoreBackup(); break;
         case 'cancel-restore-backup': App.cancelRestoreBackup(); break;
         case 'toggle-reset-confirm': App.toggleResetConfirm(); break;
