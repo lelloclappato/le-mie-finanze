@@ -42,7 +42,7 @@ e sul computer i dati restano uguali. Funziona così:
 - i dati vanno in un file nella **cartella nascosta dell'app sul tuo Google Drive** (`appDataFolder`): non compare tra i file
   del Drive e l'app non può vedere nient'altro. Il permesso chiesto è solo `drive.appdata` (più `email`, per mostrare l'account);
 - si sincronizza all'apertura, qualche secondo dopo ogni modifica, tornando sull'app e quando torna la connessione;
-- l'accesso fatto dal browser dura **un'ora**: dopo, in Oggi compare **Sincronizza** e basta un tocco. Intanto i dati restano
+- l'accesso fatto dal browser dura **un'ora**: dopo, in cima alla pagina compare **Sincronizza** e basta un tocco. Intanto i dati restano
   salvati sul dispositivo, come sempre;
 - ogni elemento (conto, movimento, debito, pagamento, posizione, categoria) ha la sua data di modifica: unendo due copie vince la più recente,
   e una cosa eliminata non "risorge" dall'altro dispositivo. La prima volta che un dispositivo con dati suoi si collega,
